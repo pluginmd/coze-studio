@@ -1,0 +1,30 @@
+# Cloudflare Worker config — the entire backend runs as this single Worker.
+name = "coze-supabase-port"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Async document indexing (replaces NSQ). Requires a paid CF plan for Queues;
+# without the queue binding the Worker falls back to ctx.waitUntil() inline
+# processing, so the free plan works too — just delete this block.
+[[queues.producers]]
+queue = "doc-index"
+binding = "INDEX_QUEUE"
+
+[[queues.consumers]]
+queue = "doc-index"
+max_batch_size = 5
+max_retries = 3
+
+[vars]
+CHAT_MODEL = "gpt-4o-mini"
+EMBEDDING_MODEL = "jina-embeddings-v3"
+EMBEDDING_DIM = "1024"
+
+# Secrets (set with `wrangler secret put <NAME>`):
+#   SUPABASE_URL               e.g. https://xxxx.supabase.co
+#   SUPABASE_SERVICE_ROLE_KEY  service role key (server-side only)
+#   SUPABASE_JWT_SECRET        legacy JWT secret, used to verify user tokens locally
+#   OPENAI_API_KEY
+#   OPENAI_BASE_URL            optional, any OpenAI-compatible endpoint
+#   JINA_API_KEY

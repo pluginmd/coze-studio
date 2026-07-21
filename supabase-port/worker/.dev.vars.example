@@ -1,0 +1,7 @@
+# Copy to .dev.vars for `wrangler dev` (never commit real values).
+SUPABASE_URL="http://127.0.0.1:54321"
+SUPABASE_SERVICE_ROLE_KEY="<service-role-key>"
+SUPABASE_JWT_SECRET="<jwt-secret>"
+OPENAI_API_KEY="sk-..."
+# OPENAI_BASE_URL="https://api.openai.com/v1"
+JINA_API_KEY="jina_..."

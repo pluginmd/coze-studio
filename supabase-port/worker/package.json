@@ -1,0 +1,22 @@
+{
+  "name": "@coze-studio/supabase-port-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Coze Studio ported to Cloudflare Workers + Supabase (multi-tenant, OpenAI chat, Jina embeddings)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.47.0",
+    "hono": "^4.6.14",
+    "jose": "^5.9.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.99.0"
+  }
+}
