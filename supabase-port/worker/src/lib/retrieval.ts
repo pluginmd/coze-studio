@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
-import { embedTexts } from './jina'
+import { embedTexts, rerankDocs } from './jina'
 import { chatComplete, contentText } from './openai'
 
 export type SearchType = 'semantic' | 'fulltext' | 'hybrid'
@@ -9,6 +9,7 @@ export interface RetrieveOptions {
   topK?: number
   minScore?: number
   searchType?: SearchType
+  rerank?: boolean // model-based rerank (Jina reranker) on top of RRF
 }
 
 export interface RetrievedChunk {
@@ -36,17 +37,25 @@ export async function retrieve(
     searchType === 'fulltext'
       ? new Array(Number(env.EMBEDDING_DIM ?? 1024)).fill(0)
       : (await embedTexts(env, [query], 'retrieval.query'))[0]
+  const topK = opts.topK ?? 6
   const { data, error } = await supabase.rpc('match_chunks', {
     p_workspace_id: workspaceId,
     p_dataset_ids: datasetIds,
     p_query: query,
     p_embedding: embedding,
-    p_limit: opts.topK ?? 6,
+    p_limit: opts.rerank ? Math.min(topK * 4, 40) : topK,
     p_search_type: searchType,
     p_min_score: opts.minScore ?? 0,
   })
   if (error) throw new Error(`retrieval failed: ${error.message}`)
-  return (data ?? []) as RetrievedChunk[]
+  const chunks = (data ?? []) as RetrievedChunk[]
+  if (!opts.rerank || chunks.length <= 1) return chunks.slice(0, topK)
+  try {
+    const ranked = await rerankDocs(env, query, chunks.map((c) => c.content), topK)
+    return ranked.map((r) => ({ ...chunks[r.index], score: r.score }))
+  } catch {
+    return chunks.slice(0, topK) // reranker unavailable — keep RRF order
+  }
 }
 
 // Multi-turn query rewrite: condense chat history + latest message into a

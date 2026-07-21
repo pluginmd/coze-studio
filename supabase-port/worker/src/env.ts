@@ -16,6 +16,7 @@ export interface Env {
   CHAT_MODEL?: string
   EMBEDDING_MODEL?: string
   EMBEDDING_DIM?: string
+  RERANK_MODEL?: string
   INDEX_QUEUE?: Queue<IndexJob>
 }
 

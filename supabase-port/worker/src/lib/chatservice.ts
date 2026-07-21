@@ -3,8 +3,9 @@ import type { Env } from '../env'
 import { runAgentLoop, type EmitFn, type ToolLogEntry, type AgentTool } from './agentloop'
 import { buildAgentTools } from './agenttools'
 import { retrieve, rewriteQuery, contextBlock, type SearchType } from './retrieval'
-import { renderTemplate } from '../engine/workflow'
-import { chatComplete, type ChatMessage, type ContentPart, type Usage } from './openai'
+import { renderTemplate, runWorkflow, type WfGraph } from '../engine/workflow'
+import { matchShortcut, expandShortcut, type Shortcut } from './shortcuts'
+import { chatComplete, contentText, type ChatMessage, type ContentPart, type Usage } from './openai'
 
 export class ChatError extends Error {
   constructor(
@@ -47,6 +48,7 @@ interface KnowledgeConfig {
   search_type?: SearchType
   auto?: boolean // false => recall exposed as a tool (on-demand)
   rewrite?: boolean // multi-turn query rewrite (default true)
+  rerank?: boolean // Jina reranker on top of RRF
 }
 
 function buildUserContent(message: string, attachments: ChatAttachment[]): string | ContentPart[] {
@@ -61,9 +63,9 @@ function buildUserContent(message: string, attachments: ChatAttachment[]): strin
   ]
 }
 
-// One full agent turn: conversation resolution, history (configurable rounds),
-// RAG (auto or on-demand tool, with query rewrite), memory variables,
-// multimodal input, tool loop, follow-up suggestions, persistence, metering.
+// One full agent turn: conversation resolution, shortcut expansion,
+// multi-agent routing, history, RAG, memory variables, multimodal input,
+// tool loop, follow-up suggestions, persistence, metering.
 export async function runChatTurn(
   env: Env,
   supabase: SupabaseClient,
@@ -100,7 +102,65 @@ export async function runChatTurn(
   }
   if (emit) await emit({ type: 'start', conversation_id: conversationId })
 
-  const modelConfig = (agent.model ?? {}) as {
+  const extraUsage: Usage = { prompt_tokens: 0, completion_tokens: 0 }
+
+  // --- shortcut commands (shortcutcmd domain) ------------------------------
+  let effectiveMessage = userMessage
+  let shortcutContext = ''
+  const matched = matchShortcut((agent.shortcuts ?? []) as Shortcut[], userMessage)
+  if (matched) {
+    if (emit) await emit({ type: 'shortcut', command: matched.shortcut.command })
+    effectiveMessage = expandShortcut(matched) || userMessage
+    if (matched.shortcut.workflow_id) {
+      const { data: wf } = await supabase
+        .from('workflows')
+        .select('graph')
+        .eq('id', matched.shortcut.workflow_id)
+        .eq('workspace_id', wid)
+        .maybeSingle()
+      if (wf) {
+        try {
+          const run = await runWorkflow(env, supabase, wid, wf.graph as WfGraph, {
+            query: matched.args.input ?? '',
+            ...matched.args,
+          }, { userKey })
+          extraUsage.prompt_tokens += run.usage.prompt_tokens
+          extraUsage.completion_tokens += run.usage.completion_tokens
+          shortcutContext =
+            `Result of the ${matched.shortcut.command} shortcut workflow (use it to answer):\n` +
+            JSON.stringify(run.output ?? null).slice(0, 4000)
+        } catch (e) {
+          shortcutContext = `The ${matched.shortcut.command} shortcut workflow failed: ${String(
+            e instanceof Error ? e.message : e
+          ).slice(0, 300)}`
+        }
+      }
+    }
+  }
+
+  // --- multi-agent routing (host + sub-agents) -----------------------------
+  let execAgent = agent
+  const ma = (agent.multi_agent ?? {}) as {
+    enabled?: boolean
+    sub_agents?: { agent_id: string; description?: string }[]
+  }
+  if (ma.enabled && ma.sub_agents?.length) {
+    const routedId = await routeSubAgent(env, ma.sub_agents, effectiveMessage, extraUsage)
+    if (routedId) {
+      const { data: sub } = await supabase
+        .from('agents')
+        .select()
+        .eq('id', routedId)
+        .eq('workspace_id', wid)
+        .maybeSingle()
+      if (sub) {
+        execAgent = sub
+        if (emit) await emit({ type: 'route', agent_id: sub.id, name: sub.name })
+      }
+    }
+  }
+
+  const modelConfig = (execAgent.model ?? {}) as {
     model?: string
     temperature?: number
     max_tokens?: number
@@ -135,12 +195,13 @@ export async function runChatTurn(
 
   // Knowledge recall — per-agent config; auto (context injection) or
   // on-demand (exposed to the model as a search tool).
-  const kb = (agent.knowledge ?? {}) as KnowledgeConfig
-  const datasetIds: string[] = agent.dataset_ids ?? []
+  const kb = (execAgent.knowledge ?? {}) as KnowledgeConfig
+  const datasetIds: string[] = execAgent.dataset_ids ?? []
   const retrieveOpts = {
     topK: kb.top_k ?? 6,
     minScore: kb.min_score,
     searchType: kb.search_type,
+    rerank: kb.rerank,
   }
   let chunksCount = 0
   let ragContext = ''
@@ -169,7 +230,7 @@ export async function runChatTurn(
       })
     } else {
       const searchQuery =
-        kb.rewrite === false ? userMessage : await rewriteQuery(env, history, userMessage)
+        kb.rewrite === false ? effectiveMessage : await rewriteQuery(env, history, effectiveMessage)
       const chunks = await retrieve(env, supabase, wid, datasetIds, searchQuery, retrieveOpts).catch(
         () => []
       )
@@ -178,7 +239,7 @@ export async function runChatTurn(
     }
   }
 
-  const tools = [...(await buildAgentTools(env, supabase, wid, userKey, agent)), ...extraTools]
+  const tools = [...(await buildAgentTools(env, supabase, wid, userKey, execAgent)), ...extraTools]
 
   // Prompt variables: agent statics overridden by the user's long-term memory.
   const { data: varRows } = await supabase
@@ -186,19 +247,20 @@ export async function runChatTurn(
     .select('name, value, agent_id')
     .eq('workspace_id', wid)
     .eq('user_key', userKey)
-    .or(`agent_id.eq.${agent.id},agent_id.is.null`)
+    .or(`agent_id.eq.${execAgent.id},agent_id.is.null`)
     .limit(100)
   const userVars: Record<string, unknown> = {}
   for (const v of varRows ?? []) userVars[v.name] = v.value
-  const systemPrompt = renderTemplate(agent.prompt ?? '', {
-    var: { ...(agent.variables ?? {}), ...userVars },
+  const systemPrompt = renderTemplate(execAgent.prompt ?? '', {
+    var: { ...(execAgent.variables ?? {}), ...userVars },
   })
 
   const messages: ChatMessage[] = [
     ...(systemPrompt.trim() ? [{ role: 'system' as const, content: systemPrompt }] : []),
     ...(ragContext ? [{ role: 'system' as const, content: ragContext }] : []),
+    ...(shortcutContext ? [{ role: 'system' as const, content: shortcutContext }] : []),
     ...history.map((m) => ({ role: m.role, content: m.content })),
-    { role: 'user' as const, content: buildUserContent(userMessage, attachments) },
+    { role: 'user' as const, content: buildUserContent(effectiveMessage, attachments) },
   ]
 
   const result = await runAgentLoop(
@@ -216,6 +278,8 @@ export async function runChatTurn(
     },
     emit
   )
+  result.usage.prompt_tokens += extraUsage.prompt_tokens
+  result.usage.completion_tokens += extraUsage.completion_tokens
 
   const { data: assistantMsg } = await supabase
     .from('messages')
@@ -224,7 +288,13 @@ export async function runChatTurn(
       workspace_id: wid,
       role: 'assistant',
       content: result.content,
-      meta: { usage: result.usage, tool_log: result.toolLog, retrieved_chunks: chunksCount },
+      meta: {
+        usage: result.usage,
+        tool_log: result.toolLog,
+        retrieved_chunks: chunksCount,
+        ...(execAgent.id !== agent.id ? { routed_agent_id: execAgent.id } : {}),
+        ...(matched ? { shortcut: matched.shortcut.command } : {}),
+      },
     })
     .select('id')
     .single()
@@ -243,11 +313,11 @@ export async function runChatTurn(
 
   // Auto follow-up suggestions (suggest-reply graph of the original).
   let suggestions: string[] | undefined
-  const suggestConfig = (agent.suggest_reply ?? {}) as { mode?: string; prompt?: string }
+  const suggestConfig = (execAgent.suggest_reply ?? {}) as { mode?: string; prompt?: string }
   if ((suggestConfig.mode === 'auto' || suggestConfig.mode === 'custom') && result.content) {
     suggestions = await generateSuggestions(
       env,
-      userMessage,
+      effectiveMessage,
       result.content,
       suggestConfig.mode === 'custom' ? suggestConfig.prompt : undefined
     )
@@ -261,6 +331,42 @@ export async function runChatTurn(
     toolLog: result.toolLog,
     usage: result.usage,
     suggestions,
+  }
+}
+
+// LLM router: pick the best sub-agent for the message, or null for the host.
+async function routeSubAgent(
+  env: Env,
+  subAgents: { agent_id: string; description?: string }[],
+  message: string,
+  usageAcc: Usage
+): Promise<string | null> {
+  const catalog = subAgents
+    .map((s, i) => `${i + 1}. id=${s.agent_id} — ${s.description ?? '(no description)'}`)
+    .join('\n')
+  try {
+    const result = await chatComplete(env, {
+      temperature: 0,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Route the user message to the most suitable specialist agent. Respond with only a JSON ' +
+            'object {"agent_id": "<id>"} choosing from the list, or {"agent_id": "host"} if none fits.\n' +
+            catalog,
+        },
+        { role: 'user', content: message.slice(0, 1000) },
+      ],
+    })
+    if (result.usage) {
+      usageAcc.prompt_tokens += result.usage.prompt_tokens ?? 0
+      usageAcc.completion_tokens += result.usage.completion_tokens ?? 0
+    }
+    const parsed = JSON.parse(contentText(result.message.content).match(/\{[\s\S]*\}/)?.[0] ?? '{}')
+    const id = String(parsed.agent_id ?? 'host')
+    return subAgents.some((s) => s.agent_id === id) ? id : null
+  } catch {
+    return null
   }
 }
 
@@ -284,8 +390,7 @@ async function generateSuggestions(
         { role: 'user', content: `User: ${question.slice(0, 800)}\nAssistant: ${answer.slice(0, 1200)}` },
       ],
     })
-    return (result.message.content ?? '')
-      .toString()
+    return contentText(result.message.content)
       .split('\n')
       .map((l: string) => l.replace(/^[\d\-.*)\s]+/, '').trim())
       .filter(Boolean)

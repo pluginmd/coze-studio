@@ -19,6 +19,7 @@ const AGENT_FIELDS = [
   'knowledge',
   'suggest_reply',
   'onboarding',
+  'multi_agent',
 ]
 
 export const agents = new Hono<AppEnv>()
