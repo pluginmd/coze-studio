@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
-import { chatComplete, contentText, type Usage } from '../lib/openai'
+import { chatComplete, chatStream, contentText, type ChatResult, type Usage } from '../lib/openai'
 import { retrieve } from '../lib/retrieval'
 import { invokeTool, type PluginRow, type ToolRow } from '../lib/plugins'
 import { isOAuthConfig, getAccessToken } from '../lib/oauth'
@@ -185,6 +185,44 @@ export async function runWorkflow(
   }
   const { output, nodeResults } = await execGraph(ctx, graph, input, opts.preset)
   return { output, nodeResults, usage: ctx.usage }
+}
+
+// Single-node debug (test one node in isolation with a hand-crafted scope).
+export async function debugNode(
+  env: Env,
+  supabase: SupabaseClient,
+  workspaceId: string,
+  graph: WfGraph,
+  nodeId: string,
+  scope: Record<string, unknown>,
+  opts: { userKey?: string } = {}
+): Promise<unknown> {
+  const node = (graph.nodes ?? []).find((n) => n.id === nodeId)
+  if (!node) throw new Error(`node not found: ${nodeId}`)
+  const ctx: EngineCtx = {
+    env,
+    supabase,
+    workspaceId,
+    userKey: opts.userKey ?? '',
+    usage: { prompt_tokens: 0, completion_tokens: 0 },
+    executed: { count: 0 },
+    depth: 0,
+    resume: null,
+  }
+  const now = new Date()
+  const input = (scope.input ?? {}) as Record<string, unknown>
+  const results: Record<string, unknown> = {
+    ...scope,
+    input,
+    sys: {
+      time: now.toISOString(),
+      date: now.toISOString().slice(0, 10),
+      workspace_id: workspaceId,
+      user_key: ctx.userKey,
+    },
+  }
+  const type = NODE_ALIASES[node.type] ?? node.type
+  return execNode(ctx, type, node, input, results)
 }
 
 async function runSubWorkflow(
@@ -426,12 +464,28 @@ async function execNode(
           : []),
         { role: 'user' as const, content: renderTemplate(String(data.prompt ?? ''), scope) },
       ]
-      const result = await chatComplete(ctx.env, {
+      const llmOpts = {
         model: data.model,
         temperature: data.temperature,
         max_tokens: data.max_tokens,
         messages,
-      })
+      }
+      let result: ChatResult
+      if (ctx.emit) {
+        // stream token deltas to the client while the node runs
+        let final: ChatResult | null = null
+        for await (const ev of chatStream(ctx.env, llmOpts)) {
+          if (ev.type === 'delta') {
+            await ctx.emit({ type: 'node_delta', node_id: node.id, content: ev.content })
+          } else {
+            final = ev.result
+          }
+        }
+        if (!final) throw new Error('llm stream ended without a final message')
+        result = final
+      } else {
+        result = await chatComplete(ctx.env, llmOpts)
+      }
       addUsage(ctx, result.usage)
       return { text: contentText(result.message.content), usage: result.usage }
     }

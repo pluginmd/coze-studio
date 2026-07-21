@@ -161,6 +161,91 @@ apps.get('/:id/releases', async (c) => {
   return c.json(data ?? [])
 })
 
+// Restore/instantiate a release: recreates every packaged resource as fresh
+// copies (ids remapped, plugin auth reset to none), enabling app-as-template.
+apps.post('/:id/releases/:version/restore', async (c) => {
+  const supabase = c.get('supabase')
+  const wid = c.req.param('wid')!
+  const { data: release } = await supabase
+    .from('app_releases')
+    .select('snapshot')
+    .eq('app_id', c.req.param('id')!)
+    .eq('workspace_id', wid)
+    .eq('version', Number(c.req.param('version')))
+    .maybeSingle()
+  if (!release) return c.json({ error: 'release not found' }, 404)
+
+  const snap = release.snapshot as Record<string, any[]>
+  const createdBy = c.get('authKind') === 'user' ? c.get('userId') : null
+  const strip = (row: Record<string, unknown>) => {
+    const copy = { ...row }
+    for (const k of ['id', 'workspace_id', 'created_by', 'created_at', 'updated_at', 'share_token', 'published_at', 'status', 'debug_status']) {
+      delete copy[k]
+    }
+    return copy
+  }
+  const remap = { datasets: new Map<string, string>(), workflows: new Map<string, string>(), databases: new Map<string, string>(), tools: new Map<string, string>(), plugins: new Map<string, string>() }
+
+  const insertOne = async (table: string, row: Record<string, unknown>) => {
+    const { data, error } = await supabase
+      .from(table)
+      .insert({ ...row, workspace_id: wid, created_by: createdBy })
+      .select('id')
+      .single()
+    if (error) throw new Error(`${table}: ${error.message}`)
+    return data.id as string
+  }
+
+  try {
+    for (const ds of snap.datasets ?? []) {
+      const { created_by: _cb, ...rest } = strip(ds)
+      remap.datasets.set(ds.id, await insertOne('datasets', rest))
+    }
+    for (const db of snap.databases ?? []) {
+      remap.databases.set(db.id, await insertOne('agent_databases', strip(db)))
+    }
+    for (const wf of snap.workflows ?? []) {
+      remap.workflows.set(wf.id, await insertOne('workflows', { ...strip(wf), status: 'draft' }))
+    }
+    for (const p of snap.plugins ?? []) {
+      remap.plugins.set(
+        p.id,
+        await insertOne('plugins', { ...strip(p), auth: { type: 'none' } }) // secrets never in snapshots
+      )
+    }
+    for (const t of snap.tools ?? []) {
+      const pluginId = remap.plugins.get(t.plugin_id)
+      if (!pluginId) continue
+      remap.tools.set(t.id, await insertOne('plugin_tools', { ...strip(t), plugin_id: pluginId }))
+    }
+    const remapIds = (ids: unknown, map: Map<string, string>) =>
+      (Array.isArray(ids) ? ids : []).map((id) => map.get(String(id))).filter(Boolean)
+    const agents: string[] = []
+    for (const a of snap.agents ?? []) {
+      const row = strip(a)
+      row.dataset_ids = remapIds(a.dataset_ids, remap.datasets)
+      row.workflow_ids = remapIds(a.workflow_ids, remap.workflows)
+      row.database_ids = remapIds(a.database_ids, remap.databases)
+      row.plugin_tool_ids = remapIds(a.plugin_tool_ids, remap.tools)
+      agents.push(await insertOne('agents', row))
+    }
+    return c.json({
+      ok: true,
+      created: {
+        agents: agents.length,
+        workflows: remap.workflows.size,
+        datasets: remap.datasets.size,
+        databases: remap.databases.size,
+        plugins: remap.plugins.size,
+        tools: remap.tools.size,
+      },
+      note: 'plugin auth reset to none (secrets are never snapshotted) — reconfigure and re-vault',
+    }, 201)
+  } catch (e) {
+    return c.json({ error: `restore failed: ${String(e instanceof Error ? e.message : e).slice(0, 300)}` }, 500)
+  }
+})
+
 apps.get('/:id/releases/:version', async (c) => {
   const { data } = await c
     .get('supabase')

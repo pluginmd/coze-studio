@@ -25,7 +25,7 @@ export interface DbRow {
   updated_at: string
 }
 
-const FETCH_CAP = 500
+const FETCH_CAP = 2000
 
 export function validateRow(
   columns: DbColumn[],
@@ -94,7 +94,11 @@ export function applyFilters(rows: DbRow[], filters: DbFilter[]): DbRow[] {
 
 export type RwMode = 'unlimited' | 'read_only' | 'per_user'
 
+const SAFE_COLUMN = /^[A-Za-z_][A-Za-z0-9_]*$/
+
 // per_user mode scopes rows to the acting end-user (original Limited mode).
+// eq/neq/contains filters are pushed down to SQL (JSONB ->> operators);
+// numeric gt/lt stay client-side for correct typing.
 export async function queryRows(
   supabase: SupabaseClient,
   workspaceId: string,
@@ -111,9 +115,19 @@ export async function queryRows(
     .order('created_at', { ascending: false })
     .limit(FETCH_CAP)
   if (scope?.rwMode === 'per_user') query = query.eq('created_by', scope.userKey ?? 'api')
+
+  const clientFilters: DbFilter[] = []
+  for (const f of filters ?? []) {
+    if (!SAFE_COLUMN.test(f.column)) throw new Error(`invalid column name: ${f.column}`)
+    if (f.op === 'eq') query = query.eq(`data->>${f.column}`, String(f.value ?? ''))
+    else if (f.op === 'neq') query = query.neq(`data->>${f.column}`, String(f.value ?? ''))
+    else if (f.op === 'contains') query = query.ilike(`data->>${f.column}`, `%${String(f.value ?? '')}%`)
+    else clientFilters.push(f)
+  }
+
   const { data, error } = await query
   if (error) throw new Error(`database query failed: ${error.message}`)
-  return applyFilters((data ?? []) as DbRow[], filters).slice(0, Math.min(limit, FETCH_CAP))
+  return applyFilters((data ?? []) as DbRow[], clientFilters).slice(0, Math.min(limit, FETCH_CAP))
 }
 
 export function assertWritable(rwMode: RwMode | undefined): void {

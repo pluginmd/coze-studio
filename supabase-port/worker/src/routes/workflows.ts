@@ -3,7 +3,7 @@ import { streamSSE } from 'hono/streaming'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AppEnv, Env } from '../env'
 import { pick } from '../lib/util'
-import { runWorkflow, SuspendError, type WfGraph, type RunOptions } from '../engine/workflow'
+import { runWorkflow, debugNode, SuspendError, type WfGraph, type RunOptions } from '../engine/workflow'
 import { broadcast } from '../lib/realtime'
 
 const WORKFLOW_FIELDS = ['name', 'description', 'graph', 'status']
@@ -326,6 +326,42 @@ workflows.post('/:id/run', async (c) => {
 
   const outcome = await executeRun(c.env, supabase, wid, run.id, workflowId, graph, input, { userKey })
   return c.json(outcome.body, outcome.status === 'failed' ? 500 : 200)
+})
+
+// Debug one node in isolation. `scope` supplies fake upstream results, e.g.
+// { input: {...}, nodeA: { text: "..." } }.
+workflows.post('/:id/debug-node', async (c) => {
+  const supabase = c.get('supabase')
+  const wid = c.req.param('wid')!
+  const { data: wf } = await supabase
+    .from('workflows')
+    .select('graph')
+    .eq('id', c.req.param('id')!)
+    .eq('workspace_id', wid)
+    .maybeSingle()
+  if (!wf) return c.json({ error: 'workflow not found' }, 404)
+  const body = await c.req
+    .json<{ node_id?: string; scope?: Record<string, unknown> }>()
+    .catch(() => ({}) as any)
+  if (!body.node_id) return c.json({ error: 'node_id is required' }, 400)
+  const userKey = c.get('authKind') === 'user' ? c.get('userId') : 'api'
+  try {
+    const result = await debugNode(
+      c.env,
+      supabase,
+      wid,
+      wf.graph as WfGraph,
+      body.node_id,
+      body.scope ?? {},
+      { userKey }
+    )
+    return c.json({ ok: true, node_id: body.node_id, result })
+  } catch (e) {
+    if (e instanceof SuspendError) {
+      return c.json({ ok: true, node_id: body.node_id, suspended: true, question: e.question, options: e.options })
+    }
+    return c.json({ ok: false, node_id: body.node_id, error: String(e instanceof Error ? e.message : e).slice(0, 800) }, 422)
+  }
 })
 
 workflows.get('/:id/runs', async (c) => {

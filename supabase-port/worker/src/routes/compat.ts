@@ -159,6 +159,43 @@ compatV3.post('/chat', async (c) => {
   })
 })
 
+// Non-stream chats complete inline, so retrieve always reports the terminal
+// state of the conversation's last assistant turn.
+compatV3.get('/chat/retrieve', async (c) => {
+  const wid = resolveWorkspace(c)
+  if (!wid || !(await requireMembership(c, wid))) return c.json({ code: 4100, msg: 'unauthorized' }, 401)
+  const conversationId = c.req.query('conversation_id')
+  if (!conversationId) return c.json({ code: 4000, msg: 'conversation_id is required' }, 400)
+  const { data: last } = await c
+    .get('supabase')
+    .from('messages')
+    .select('id, meta, created_at')
+    .eq('conversation_id', conversationId)
+    .eq('workspace_id', wid)
+    .eq('role', 'assistant')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const usage = (last?.meta as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | null)?.usage
+  return c.json({
+    code: 0,
+    data: {
+      id: last?.id ?? c.req.query('chat_id') ?? '',
+      conversation_id: conversationId,
+      status: last ? 'completed' : 'in_progress',
+      ...(usage
+        ? {
+            usage: {
+              token_count: (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0),
+              input_count: usage.prompt_tokens ?? 0,
+              output_count: usage.completion_tokens ?? 0,
+            },
+          }
+        : {}),
+    },
+  })
+})
+
 compatV3.get('/chat/message/list', async (c) => {
   const wid = resolveWorkspace(c)
   if (!wid || !(await requireMembership(c, wid))) return c.json({ code: 4100, msg: 'unauthorized' }, 401)

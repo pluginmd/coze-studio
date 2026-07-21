@@ -82,16 +82,40 @@ workspaceScoped.get('/members', async (c) => {
   return c.json(data ?? [])
 })
 
+// Add a member by user_id OR email. Email path: sends a Supabase invite for
+// new users, or finds the existing account.
 workspaceScoped.post('/members', requireAdmin, async (c) => {
-  const body = await c.req.json<{ user_id?: string; role?: string }>().catch(() => ({}) as any)
-  if (!body.user_id) return c.json({ error: 'user_id is required' }, 400)
+  const supabase = c.get('supabase')
+  const body = await c.req
+    .json<{ user_id?: string; email?: string; role?: string }>()
+    .catch(() => ({}) as any)
   const role = body.role === 'admin' ? 'admin' : 'member'
-  const { error } = await c
-    .get('supabase')
+
+  let userId = body.user_id
+  let invited = false
+  if (!userId && body.email?.includes('@')) {
+    const email = body.email.trim().toLowerCase()
+    const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email)
+    if (inviteData?.user) {
+      userId = inviteData.user.id
+      invited = true
+    } else if (inviteError) {
+      // likely already registered — look the account up
+      for (let page = 1; page <= 5 && !userId; page++) {
+        const { data: list } = await supabase.auth.admin.listUsers({ page, perPage: 200 })
+        userId = list?.users.find((u) => u.email?.toLowerCase() === email)?.id
+        if (!list?.users.length) break
+      }
+      if (!userId) return c.json({ error: `could not invite or find ${email}: ${inviteError.message}` }, 400)
+    }
+  }
+  if (!userId) return c.json({ error: 'user_id or email is required' }, 400)
+
+  const { error } = await supabase
     .from('workspace_members')
-    .upsert({ workspace_id: c.req.param('wid')!, user_id: body.user_id, role })
+    .upsert({ workspace_id: c.req.param('wid')!, user_id: userId, role })
   if (error) return c.json({ error: error.message }, 400)
-  return c.json({ ok: true }, 201)
+  return c.json({ ok: true, user_id: userId, invited }, 201)
 })
 
 workspaceScoped.delete('/members/:uid', requireAdmin, async (c) => {
