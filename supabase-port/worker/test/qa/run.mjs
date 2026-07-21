@@ -16,7 +16,7 @@ page.on('console', (msg) => { if (msg.type() === 'error') errors.push('console: 
 await page.addInitScript(() => {
   localStorage.setItem('cz-token', 'qa-token')
   localStorage.setItem('cz-view', 'home')
-  localStorage.setItem('cz-theme', 'dark')
+  localStorage.setItem('cz-theme', 'light')
 })
 
 async function shot(name) {
@@ -27,22 +27,26 @@ async function shot(name) {
 
 await page.goto(BASE)
 await page.waitForTimeout(900)
-await shot('01-home-dark')
+await shot('01-home-light')
 
 await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'))
-await shot('02-home-light')
-await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+await shot('02-home-dark')
+await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'))
 
-// agents list + editor tabs
+// agents list + 3-pane IDE with live preview chat
 await page.click('#nav-agents')
 await shot('03-agents')
 await page.click('#main .card >> nth=0')
-await page.waitForTimeout(700)
-await shot('04-agent-persona')
-for (const [i, tab] of [['Model', '05-agent-model'], ['Kỹ năng', '06-agent-skills'], ['Trải nghiệm', '07-agent-experience']]) {
-  await page.click('.tabs button:has-text("' + i + '")')
-  await shot(tab)
-}
+await page.waitForTimeout(900)
+await shot('04-agent-ide')
+await page.fill('.preview-chat input', 'Chính sách đổi trả thế nào?')
+await page.click('.preview-chat .pbar .btn.primary')
+await page.waitForTimeout(2600)
+await shot('05-agent-ide-preview')
+await page.click('button:has-text("🎛")')
+await page.waitForTimeout(300)
+await shot('06-agent-model-modal')
+await page.keyboard.press('Escape')
 
 // chat with streaming markdown
 await page.click('#nav-chat')

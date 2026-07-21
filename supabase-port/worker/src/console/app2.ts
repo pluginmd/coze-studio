@@ -96,6 +96,39 @@ function wfEditor(wf) {
     }})]);
 
   var wrap = el('div', { class: 'wf-wrap' });
+
+  /* node palette (Coze workflow IDE style): click to drop on canvas */
+  var GROUPS = [
+    ['Luồng', ['condition','selector','loop','batch','sub_workflow','end']],
+    ['Tương tác', ['question','input','output_emitter']],
+    ['AI', ['llm','intent']],
+    ['Knowledge', ['knowledge_retrieve','knowledge_index','knowledge_delete']],
+    ['Database', ['database_query','database_insert','database_update','database_delete']],
+    ['Hội thoại', ['conversation_create','conversation_list','conversation_clear','message_create','message_list']],
+    ['Tích hợp', ['plugin','http']],
+    ['Dữ liệu', ['template','code','text_processor','json_parse','json_stringify','variable_aggregator','variable_assign']]
+  ];
+  var palette = el('div', { class: 'wf-palette' });
+  var quickCount = {};
+  function quickAdd(type) {
+    quickCount[type] = (quickCount[type] || 0) + 1;
+    var base = type.split('_').map(function(w){ return w.slice(0, 4); }).join('');
+    var nid = base + quickCount[type];
+    while (graph.nodes.some(function(n){ return n.id === nid; })) { quickCount[type]++; nid = base + quickCount[type]; }
+    snapshot();
+    graph.nodes.push({ id: nid, type: type, data: { _pos: { x: vb.x + vb.w / 2 - 90, y: vb.y + vb.h / 2 - 32 } } });
+    selected = graph.nodes[graph.nodes.length - 1];
+    render(); renderPanel();
+  }
+  GROUPS.forEach(function(g){
+    palette.appendChild(el('h4', { text: g[0] }));
+    g[1].forEach(function(t){
+      palette.appendChild(el('button', { onclick: function(){ quickAdd(t); } },
+        el('span', { class: 'swatch', style: 'background:' + nodeColor(t) }), t));
+    });
+  });
+  wrap.appendChild(palette);
+
   var canvasBox = el('div', { class: 'wf-canvas' });
   var NS = 'http://www.w3.org/2000/svg';
   function svgEl(tag, attrs) { var e = document.createElementNS(NS, tag); if (attrs) Object.keys(attrs).forEach(function(k){ e.setAttribute(k, attrs[k]); }); return e; }

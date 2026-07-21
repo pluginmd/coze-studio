@@ -1,11 +1,12 @@
 // Design system CSS for the admin console. Light/dark via CSS variables;
 // [data-theme] set by the in-app toggle wins over the system preference.
 export const consoleStyles = `
+  /* Coze design language: indigo #4D53E8 on light gray, white cards */
   :root {
-    --bg: #f6f7fb; --bg2: #ffffff; --card: #ffffff; --border: #e4e6ef;
-    --text: #17182b; --muted: #6b7280; --primary: #6366f1; --primary-soft: #eef0ff;
-    --success: #059669; --success-soft: #d1fae5; --warn: #b45309; --warn-soft: #fef3c7;
-    --danger: #dc2626; --danger-soft: #fee2e2; --shadow: 0 1px 3px rgba(16,18,35,.07), 0 4px 14px rgba(16,18,35,.05);
+    --bg: #f2f3f7; --bg2: #ffffff; --card: #ffffff; --border: #e8e9f0;
+    --text: #1c1d23; --muted: #6a6f8a; --primary: #4d53e8; --primary-soft: #eceffd;
+    --success: #0f9d6b; --success-soft: #d9f4e9; --warn: #b45309; --warn-soft: #fef3c7;
+    --danger: #e0332f; --danger-soft: #fdebea; --shadow: 0 1px 2px rgba(28,29,35,.05), 0 4px 16px rgba(28,29,35,.06);
     --r: 12px; --r-sm: 8px;
     color-scheme: light;
   }
@@ -19,10 +20,10 @@ export const consoleStyles = `
     }
   }
   :root[data-theme="light"] {
-    --bg: #f6f7fb; --bg2: #ffffff; --card: #ffffff; --border: #e4e6ef;
-    --text: #17182b; --muted: #6b7280; --primary: #6366f1; --primary-soft: #eef0ff;
-    --success: #059669; --success-soft: #d1fae5; --warn: #b45309; --warn-soft: #fef3c7;
-    --danger: #dc2626; --danger-soft: #fee2e2; --shadow: 0 1px 3px rgba(16,18,35,.07), 0 4px 14px rgba(16,18,35,.05);
+    --bg: #f2f3f7; --bg2: #ffffff; --card: #ffffff; --border: #e8e9f0;
+    --text: #1c1d23; --muted: #6a6f8a; --primary: #4d53e8; --primary-soft: #eceffd;
+    --success: #0f9d6b; --success-soft: #d9f4e9; --warn: #b45309; --warn-soft: #fef3c7;
+    --danger: #e0332f; --danger-soft: #fdebea; --shadow: 0 1px 2px rgba(28,29,35,.05), 0 4px 16px rgba(28,29,35,.06);
     color-scheme: light;
   }
   :root[data-theme="dark"] {
@@ -204,4 +205,31 @@ export const consoleStyles = `
     .wf-canvas { height: 55vh; }
   }
   #menubtn { display: none; position: fixed; top: 10px; left: 10px; z-index: 55; }
+
+  /* ---- Coze-style Agent IDE (3-pane) ---- */
+  .ide { display: grid; grid-template-columns: minmax(300px, 3fr) minmax(320px, 3.4fr) minmax(320px, 3.6fr); gap: 14px; height: calc(100dvh - 118px); }
+  .ide > .card { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+  .ide .colhead { padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 700; font-size: 13.5px; display: flex; align-items: center; gap: 8px; flex: none; }
+  .ide .colbody { padding: 14px 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; }
+  .ide .prompt-area { flex: 1; resize: none; min-height: 200px; border: 1px solid var(--border); background: var(--bg2); }
+  details.acc { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; background: var(--bg2); }
+  details.acc > summary { list-style: none; cursor: pointer; padding: 11px 14px; font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  details.acc > summary::-webkit-details-marker { display: none; }
+  details.acc > summary .caret { margin-left: auto; color: var(--muted); transition: transform .15s; }
+  details.acc[open] > summary .caret { transform: rotate(90deg); }
+  details.acc > .accbody { padding: 4px 14px 14px; border-top: 1px solid var(--border); }
+  .preview-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .preview-chat .plog { flex: 1; overflow-y: auto; padding: 4px 2px; }
+  .preview-chat .pbar { display: flex; gap: 8px; padding-top: 10px; flex: none; }
+  .preview-chat .pbar input { flex: 1; border-radius: 10px; }
+
+  /* ---- workflow palette + dotted canvas (Coze workflow IDE look) ---- */
+  .wf-palette { width: 172px; flex: none; overflow-y: auto; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r); padding: 10px; }
+  .wf-palette h4 { margin: 8px 4px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .wf-palette button { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 0; background: none; color: var(--text); padding: 6px 8px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
+  .wf-palette button:hover { background: var(--primary-soft); color: var(--primary); }
+  .wf-palette .swatch { width: 8px; height: 8px; border-radius: 3px; flex: none; }
+  .wf-canvas { background-image: radial-gradient(circle, var(--border) 1px, transparent 1px); background-size: 22px 22px; background-color: var(--bg2); }
+
+  @media (max-width: 1100px) { .ide { grid-template-columns: 1fr; height: auto; } .ide > .card { min-height: 320px; } }
 `

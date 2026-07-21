@@ -129,7 +129,6 @@ RENDER.agents = function() {
   }).catch(err);
 };
 
-var AGENT_TABS = ['Persona', 'Model', 'Kỹ năng', 'Trải nghiệm', 'Nâng cao'];
 function field(labelText, input, hint) {
   var l = el('label', { class: 'f' }, el('span', { text: labelText }), input);
   if (hint) l.appendChild(el('div', { class: 'hint', text: hint }));
@@ -176,185 +175,250 @@ function multiPick(endpoint, selectedIds, labelKey) {
   return box;
 }
 
+function acc(title, open, body) {
+  var d = el('details', { class: 'acc' });
+  if (open) d.setAttribute('open', '');
+  d.appendChild(el('summary', {}, title, el('span', { class: 'caret', text: '›' })));
+  var b = el('div', { class: 'accbody' });
+  b.appendChild(body);
+  d.appendChild(b);
+  return d;
+}
+
+/* Coze-style 3-pane Agent IDE: Persona & Prompt | Skills | Preview & Debug */
 function editAgent(id) {
   var m = main();
   wapi('GET', '/agents/' + id).then(function(a){
     var draft = JSON.parse(JSON.stringify(a));
-    var head = pagehead(m, a.name, [
-      el('button', { class: 'btn primary', text: '💾 Lưu', onclick: save }),
-      el('button', { class: 'btn', text: '💬 Chat thử', onclick: function(){ S.chatAgent = a.id; go('chat'); } }),
-      el('button', { class: 'btn', text: '📦 Publish', onclick: function(){ wapi('POST', '/agents/' + id + '/publish').then(function(r){ toast('✅ Publish v' + r.version, 'ok'); }).catch(err); } }),
+    var C = {};
+    var mc = draft.model || {};
+
+    function openModelModal() {
+      var body = el('div');
+      C.model = el('input', { value: mc.model || '', placeholder: 'gpt-4o-mini (mặc định)' , style: 'width:100%' });
+      C.temperature = numInput(mc.temperature, '0.1');
+      C.max_tokens = numInput(mc.max_tokens, '1');
+      C.top_p = numInput(mc.top_p, '0.05');
+      C.frequency_penalty = numInput(mc.frequency_penalty, '0.1');
+      C.presence_penalty = numInput(mc.presence_penalty, '0.1');
+      C.response_format = selInput(mc.response_format || 'text', [['text', 'Text'], ['json', 'JSON mode']]);
+      C.history_rounds = numInput(mc.history_rounds, '1');
+      body.appendChild(field('Model', C.model));
+      var g = el('div', { class: 'grid cols3' });
+      g.appendChild(field('Temperature', C.temperature));
+      g.appendChild(field('Max tokens', C.max_tokens));
+      g.appendChild(field('Top P', C.top_p));
+      g.appendChild(field('Frequency penalty', C.frequency_penalty));
+      g.appendChild(field('Presence penalty', C.presence_penalty));
+      g.appendChild(field('Lượt hội thoại nhớ', C.history_rounds));
+      body.appendChild(g);
+      body.appendChild(field('Định dạng trả lời', C.response_format));
+      modal({ title: '🎛 Cấu hình model', wide: true, body: body, actions: [
+        { label: 'Áp dụng', primary: true, value: function(){
+          mc = {};
+          if (C.model.value.trim()) mc.model = C.model.value.trim();
+          ['temperature', 'max_tokens', 'top_p', 'frequency_penalty', 'presence_penalty', 'history_rounds'].forEach(function(k){
+            if (C[k].value !== '') mc[k] = Number(C[k].value);
+          });
+          if (C.response_format.value !== 'text') mc.response_format = C.response_format.value;
+          modelBtn.textContent = '🎛 ' + (mc.model || 'model mặc định');
+          return true;
+        } }, { label: 'Hủy', value: null }] });
+    }
+
+    var nameIn = el('input', { value: draft.name, style: 'font-weight:700;font-size:16px;border-color:transparent;background:transparent;max-width:260px' });
+    var modelBtn = el('button', { class: 'btn sm', text: '🎛 ' + (mc.model || 'model mặc định'), onclick: openModelModal });
+    var head = el('div', { class: 'pagehead' },
+      el('button', { class: 'btn sm', text: '←', onclick: function(){ go('agents'); } }),
+      nameIn,
+      el('span', { class: 'badge ' + (draft.status === 'published' ? 'ok' : 'mut'), text: draft.status }),
+      modelBtn,
+      el('span', { class: 'spacer' }),
+      el('button', { class: 'btn', text: '💾 Lưu', onclick: save }),
       el('button', { class: 'btn', text: '🔗 Share', onclick: function(){
         wapi('POST', '/agents/' + id + '/share').then(function(r){
           modal({ title: 'Public chat URL', body: el('input', { value: r.url, style: 'width:100%', onclick: function(ev){ ev.target.select(); } }), actions: [{ label: 'Đóng', value: true }] });
         }).catch(err);
       }}),
       el('button', { class: 'btn', text: '⧉', title: 'Nhân bản', onclick: function(){ wapi('POST', '/agents/' + id + '/duplicate').then(function(r){ toast('✅ Đã nhân bản', 'ok'); editAgent(r.id); }).catch(err); } }),
-      el('button', { class: 'btn danger', text: '🗑', onclick: function(){ confirmM('Xóa agent "' + a.name + '"?', true).then(function(ok){ if (ok) wapi('DELETE', '/agents/' + id).then(function(){ go('agents'); }).catch(err); }); } }),
-      el('button', { class: 'btn', text: '←', onclick: function(){ go('agents'); } })
-    ]);
-    if (a.share_token) head.appendChild(el('div', { class: 'sub', style: 'width:100%', text: 'Share: ' + location.origin + '/share/' + a.share_token }));
+      el('button', { class: 'btn danger', text: '🗑', onclick: function(){ confirmM('Xóa agent "' + draft.name + '"?', true).then(function(ok){ if (ok) wapi('DELETE', '/agents/' + id).then(function(){ go('agents'); }).catch(err); }); } }),
+      el('button', { class: 'btn primary', text: '🚀 Publish', onclick: function(){
+        save(function(){ wapi('POST', '/agents/' + id + '/publish').then(function(r){ toast('✅ Publish v' + r.version, 'ok'); }).catch(err); });
+      }}));
+    m.appendChild(head);
 
-    var tabs = el('div', { class: 'tabs' });
-    var body = el('div');
-    m.appendChild(tabs); m.appendChild(body);
-    var panes = {};
-    AGENT_TABS.forEach(function(name, i){
-      var b = el('button', { text: name, onclick: function(){ show(name); } });
-      tabs.appendChild(b); panes[name] = { btn: b };
-    });
-    function show(name) {
-      AGENT_TABS.forEach(function(n){ panes[n].btn.classList.toggle('on', n === name); });
-      body.innerHTML = ''; body.appendChild(build(name));
-    }
+    var ide = el('div', { class: 'ide' });
+    m.appendChild(ide);
 
-    /* form controls (kept as references so save() can read them) */
-    var C = {};
-    function build(name) {
-      var card = el('div', { class: 'card' });
-      if (name === 'Persona') {
-        C.name = el('input', { value: draft.name });
-        C.description = el('input', { value: draft.description || '' });
-        C.prompt = el('textarea', { rows: 14 }); C.prompt.value = draft.prompt || '';
-        card.appendChild(field('Tên', C.name));
-        card.appendChild(field('Mô tả', C.description));
-        card.appendChild(field('System prompt (persona)', C.prompt, 'Hỗ trợ biến: {{var.x}} và {{sys.time}}, {{sys.date}}, {{sys.user_key}}, {{sys.agent_name}}'));
-      }
-      if (name === 'Model') {
-        var mc = draft.model || {};
-        C.model = el('input', { value: mc.model || '', placeholder: 'gpt-4o-mini (mặc định theo env)' });
-        C.temperature = numInput(mc.temperature, '0.1');
-        C.max_tokens = numInput(mc.max_tokens, '1');
-        C.top_p = numInput(mc.top_p, '0.05');
-        C.frequency_penalty = numInput(mc.frequency_penalty, '0.1');
-        C.presence_penalty = numInput(mc.presence_penalty, '0.1');
-        C.response_format = selInput(mc.response_format || 'text', [['text', 'Text'], ['json', 'JSON mode']]);
-        C.history_rounds = numInput(mc.history_rounds, '1');
-        card.appendChild(field('Model', C.model));
-        var g = el('div', { class: 'grid cols3' });
-        g.appendChild(field('Temperature', C.temperature));
-        g.appendChild(field('Max tokens', C.max_tokens));
-        g.appendChild(field('Top P', C.top_p));
-        g.appendChild(field('Frequency penalty', C.frequency_penalty));
-        g.appendChild(field('Presence penalty', C.presence_penalty));
-        g.appendChild(field('Số lượt hội thoại nhớ', C.history_rounds));
-        card.appendChild(g);
-        card.appendChild(field('Định dạng trả lời', C.response_format));
-      }
-      if (name === 'Kỹ năng') {
-        C.datasets = multiPick('/datasets', draft.dataset_ids);
-        C.workflows = multiPick('/workflows', draft.workflow_ids);
-        C.databases = multiPick('/databases', draft.database_ids);
-        C.tools = el('div', { style: 'max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px' });
-        var toolSet = {};
-        (draft.plugin_tool_ids || []).forEach(function(tid){ toolSet[tid] = true; });
-        wapi('GET', '/plugins').then(function(ps){
-          C.tools.innerHTML = '';
-          if (!ps.length) { C.tools.appendChild(el('div', { class: 'sub', text: 'Chưa có plugin.' })); return; }
-          ps.forEach(function(p){
-            var head2 = el('div', { style: 'font-weight:600;margin-top:6px', text: '🔌 ' + p.name });
-            C.tools.appendChild(head2);
-            wapi('GET', '/plugins/' + p.id + '/tools').then(function(ts){
-              ts.forEach(function(t){
-                var cb = el('input', { type: 'checkbox', onchange: function(){ if (cb.checked) toolSet[t.id] = true; else delete toolSet[t.id]; } });
-                cb.checked = !!toolSet[t.id];
-                head2.after(el('label', { style: 'display:flex;gap:8px;align-items:center;padding:2px 10px;cursor:pointer' }, cb, el('span', { text: t.name })));
-              });
-            });
+    /* ---- cột 1: Persona & Prompt ---- */
+    var col1 = el('div', { class: 'card' });
+    col1.appendChild(el('div', { class: 'colhead' }, '🎭 Persona & Prompt'));
+    var c1b = el('div', { class: 'colbody' });
+    C.description = el('input', { value: draft.description || '', placeholder: 'Mô tả ngắn về agent…', style: 'width:100%;margin-bottom:10px' });
+    C.prompt = el('textarea', { class: 'prompt-area mono' });
+    C.prompt.value = draft.prompt || '';
+    c1b.appendChild(C.description);
+    c1b.appendChild(C.prompt);
+    c1b.appendChild(el('div', { class: 'hint', style: 'margin-top:8px', text: 'Biến: {{var.x}} · {{sys.time}} · {{sys.date}} · {{sys.user_key}} · {{sys.agent_name}}' }));
+    col1.appendChild(c1b);
+
+    /* ---- cột 2: Kỹ năng ---- */
+    var col2 = el('div', { class: 'card' });
+    col2.appendChild(el('div', { class: 'colhead' }, '🧩 Kỹ năng'));
+    var c2b = el('div', { class: 'colbody' });
+
+    var toolSet = {};
+    (draft.plugin_tool_ids || []).forEach(function(tid){ toolSet[tid] = true; });
+    C.tools = el('div');
+    wapi('GET', '/plugins').then(function(ps){
+      if (!ps.length) { C.tools.appendChild(el('div', { class: 'sub', text: 'Chưa có plugin — thêm ở mục Plugins.' })); return; }
+      ps.forEach(function(p){
+        var hd = el('div', { style: 'font-weight:600;margin-top:6px;font-size:12.5px', text: (p.kind === 'mcp' ? '🧩 ' : '🔌 ') + p.name });
+        C.tools.appendChild(hd);
+        wapi('GET', '/plugins/' + p.id + '/tools').then(function(ts){
+          ts.forEach(function(t){
+            var cb = el('input', { type: 'checkbox', onchange: function(){ if (cb.checked) toolSet[t.id] = true; else delete toolSet[t.id]; } });
+            cb.checked = !!toolSet[t.id];
+            hd.after(el('label', { style: 'display:flex;gap:8px;align-items:center;padding:2px 10px;cursor:pointer' }, cb, el('span', { text: t.name })));
           });
         });
-        C.tools.getIds = function(){ return Object.keys(toolSet); };
-        var kb = draft.knowledge || {};
-        C.kb_top_k = numInput(kb.top_k, '1');
-        C.kb_min_score = numInput(kb.min_score, '0.05');
-        C.kb_search = selInput(kb.search_type || 'hybrid', [['hybrid', 'Hybrid (vector+keyword)'], ['semantic', 'Semantic'], ['fulltext', 'Full-text']]);
-        C.kb_auto = selInput(kb.auto === false ? 'tool' : 'auto', [['auto', 'Tự động mỗi lượt'], ['tool', 'On-demand (agent tự gọi tool)']]);
-        C.kb_rerank = selInput(kb.rerank ? '1' : '0', [['0', 'Tắt'], ['1', 'Bật (Jina reranker)']]);
-        card.appendChild(field('📚 Knowledge bases', C.datasets));
-        var kg = el('div', { class: 'grid cols3', style: 'margin-top:4px' });
-        kg.appendChild(field('Top K', C.kb_top_k));
-        kg.appendChild(field('Min score', C.kb_min_score));
-        kg.appendChild(field('Kiểu tìm', C.kb_search));
-        kg.appendChild(field('Chế độ recall', C.kb_auto));
-        kg.appendChild(field('Rerank', C.kb_rerank));
-        card.appendChild(kg);
-        card.appendChild(field('🔧 Plugin tools', C.tools));
-        card.appendChild(field('🔀 Workflows (thành tool)', C.workflows));
-        card.appendChild(field('🗄️ Databases (memory)', C.databases));
-      }
-      if (name === 'Trải nghiệm') {
-        C.welcome = el('textarea', { rows: 3 }); C.welcome.value = draft.welcome_message || '';
-        C.questions = listEditor((draft.suggested_questions || []).slice(), 'Câu hỏi gợi ý…');
-        var sr = draft.suggest_reply || {};
-        C.sr_mode = selInput(sr.mode || 'off', [['off', 'Tắt'], ['auto', 'Tự sinh 3 gợi ý'], ['custom', 'Prompt tùy chỉnh']]);
-        C.sr_prompt = el('textarea', { rows: 3 }); C.sr_prompt.value = sr.prompt || '';
-        var ob = draft.onboarding || {};
-        C.ob_mode = selInput(ob.mode || 'manual', [['manual', 'Thủ công (dùng welcome)'], ['llm', 'LLM tự sinh lời chào']]);
-        C.ob_prompt = el('textarea', { rows: 3 }); C.ob_prompt.value = ob.prompt || '';
-        card.appendChild(field('Lời chào (welcome)', C.welcome));
-        card.appendChild(field('Câu hỏi gợi ý mở đầu', C.questions));
-        card.appendChild(field('Follow-up suggestions', C.sr_mode));
-        card.appendChild(field('Prompt gợi ý (mode custom)', C.sr_prompt));
-        card.appendChild(field('Onboarding', C.ob_mode));
-        card.appendChild(field('Prompt onboarding (mode llm)', C.ob_prompt));
-      }
-      if (name === 'Nâng cao') {
-        C.variables = el('textarea', { rows: 5, class: 'mono' }); C.variables.value = JSON.stringify(draft.variables || {}, null, 2);
-        C.shortcuts = el('textarea', { rows: 7, class: 'mono' }); C.shortcuts.value = JSON.stringify(draft.shortcuts || [], null, 2);
-        C.multi_agent = el('textarea', { rows: 6, class: 'mono' }); C.multi_agent.value = JSON.stringify(draft.multi_agent || {}, null, 2);
-        card.appendChild(field('Variables (JSON)', C.variables, 'Dùng trong prompt qua {{var.x}}'));
-        card.appendChild(field('Shortcut commands (JSON)', C.shortcuts, '[{"command":"/dich","template":"Dịch sang {{lang}}: {{text}}","components":[{"name":"text"},{"name":"lang"}],"workflow_id":null}]'));
-        card.appendChild(field('Multi-agent (JSON)', C.multi_agent, '{"enabled":true,"sub_agents":[{"agent_id":"…","description":"chuyên về …"}]}'));
-      }
-      return card;
+      });
+    });
+    C.tools.getIds = function(){ return Object.keys(toolSet); };
+    c2b.appendChild(acc('🔌 Plugins', true, C.tools));
+
+    C.workflows = multiPick('/workflows', draft.workflow_ids);
+    c2b.appendChild(acc('🔀 Workflows', false, C.workflows));
+
+    var kb = draft.knowledge || {};
+    var kbBox = el('div');
+    C.datasets = multiPick('/datasets', draft.dataset_ids);
+    C.kb_top_k = numInput(kb.top_k, '1');
+    C.kb_min_score = numInput(kb.min_score, '0.05');
+    C.kb_search = selInput(kb.search_type || 'hybrid', [['hybrid', 'Hybrid'], ['semantic', 'Semantic'], ['fulltext', 'Full-text']]);
+    C.kb_auto = selInput(kb.auto === false ? 'tool' : 'auto', [['auto', 'Tự động'], ['tool', 'On-demand']]);
+    C.kb_rerank = selInput(kb.rerank ? '1' : '0', [['0', 'Rerank tắt'], ['1', 'Rerank Jina']]);
+    kbBox.appendChild(C.datasets);
+    var kg = el('div', { class: 'grid cols3', style: 'margin-top:4px' });
+    kg.appendChild(field('Top K', C.kb_top_k));
+    kg.appendChild(field('Min score', C.kb_min_score));
+    kg.appendChild(field('Kiểu tìm', C.kb_search));
+    kg.appendChild(field('Recall', C.kb_auto));
+    kg.appendChild(field('Rerank', C.kb_rerank));
+    kbBox.appendChild(kg);
+    c2b.appendChild(acc('📚 Knowledge', true, kbBox));
+
+    C.databases = multiPick('/databases', draft.database_ids);
+    c2b.appendChild(acc('🗄️ Databases (memory)', false, C.databases));
+
+    var expBox = el('div');
+    C.welcome = el('textarea', { rows: 2 }); C.welcome.value = draft.welcome_message || '';
+    C.questions = listEditor((draft.suggested_questions || []).slice(), 'Câu hỏi gợi ý…');
+    var sr = draft.suggest_reply || {};
+    C.sr_mode = selInput(sr.mode || 'off', [['off', 'Gợi ý tắt'], ['auto', 'Tự sinh gợi ý'], ['custom', 'Prompt tùy chỉnh']]);
+    C.sr_prompt = el('textarea', { rows: 2 }); C.sr_prompt.value = sr.prompt || '';
+    var ob = draft.onboarding || {};
+    C.ob_mode = selInput(ob.mode || 'manual', [['manual', 'Welcome thủ công'], ['llm', 'LLM tự sinh lời chào']]);
+    C.ob_prompt = el('textarea', { rows: 2 }); C.ob_prompt.value = ob.prompt || '';
+    expBox.appendChild(field('Lời chào', C.welcome));
+    expBox.appendChild(field('Câu hỏi mở đầu', C.questions));
+    expBox.appendChild(field('Follow-up', C.sr_mode));
+    expBox.appendChild(field('Prompt gợi ý (custom)', C.sr_prompt));
+    expBox.appendChild(field('Onboarding', C.ob_mode));
+    expBox.appendChild(field('Prompt onboarding (llm)', C.ob_prompt));
+    c2b.appendChild(acc('💬 Trải nghiệm', false, expBox));
+
+    var advBox = el('div');
+    C.variables = el('textarea', { rows: 4, class: 'mono' }); C.variables.value = JSON.stringify(draft.variables || {}, null, 2);
+    C.shortcuts = el('textarea', { rows: 5, class: 'mono' }); C.shortcuts.value = JSON.stringify(draft.shortcuts || [], null, 2);
+    C.multi_agent = el('textarea', { rows: 4, class: 'mono' }); C.multi_agent.value = JSON.stringify(draft.multi_agent || {}, null, 2);
+    advBox.appendChild(field('Variables (JSON)', C.variables));
+    advBox.appendChild(field('Shortcuts (JSON)', C.shortcuts));
+    advBox.appendChild(field('Multi-agent (JSON)', C.multi_agent));
+    c2b.appendChild(acc('⚙️ Nâng cao', false, advBox));
+    col2.appendChild(c2b);
+
+    /* ---- cột 3: Preview & Debug ---- */
+    var col3 = el('div', { class: 'card' });
+    var previewConv = null;
+    col3.appendChild(el('div', { class: 'colhead' }, '🧪 Preview & Debug',
+      el('span', { class: 'spacer' }),
+      el('button', { class: 'btn sm', text: '🔄', title: 'Hội thoại mới', onclick: function(){ previewConv = null; plog.innerHTML = ''; seedWelcome(); } })));
+    var c3b = el('div', { class: 'colbody' });
+    var pc = el('div', { class: 'preview-chat' });
+    var plog = el('div', { class: 'plog' });
+    var pin = el('input', { placeholder: 'Test agent… (Lưu trước khi test thay đổi)' });
+    var pbar = el('div', { class: 'pbar' }, pin, el('button', { class: 'btn primary sm', text: '➤', onclick: function(){ psend(pin.value); } }));
+    pc.appendChild(plog); pc.appendChild(pbar);
+    c3b.appendChild(pc);
+    col3.appendChild(c3b);
+    function pbubble(role) {
+      var bub = el('div', { class: 'bub' });
+      var msg = el('div', { class: 'msg ' + (role === 'user' ? 'user' : 'ai') }, el('div', { class: 'av', text: role === 'user' ? '🧑' : '🤖' }), bub);
+      plog.appendChild(msg); plog.scrollTop = plog.scrollHeight;
+      return { bub: bub, setMd: function(t, s){ bub.innerHTML = '<div class="md">' + md(t) + (s ? '<span class="cursor"></span>' : '') + '</div>'; plog.scrollTop = plog.scrollHeight; } };
     }
-    function save() {
+    function seedWelcome() { if (draft.welcome_message) pbubble('ai').setMd(draft.welcome_message); }
+    seedWelcome();
+    pin.addEventListener('keydown', function(ev){ if (ev.key === 'Enter') psend(pin.value); });
+    function psend(text) {
+      text = (text || '').trim(); if (!text) return;
+      pin.value = '';
+      pbubble('user').setMd(text);
+      var b = pbubble('ai'); b.setMd('', true);
+      var raw = '';
+      fetch('/v1/workspaces/' + S.wid + '/chat', {
+        method: 'POST',
+        headers: { 'authorization': 'Bearer ' + S.token, 'content-type': 'application/json' },
+        body: JSON.stringify({ agent_id: id, conversation_id: previewConv, message: text })
+      }).then(function(res){
+        if (!res.ok) return res.text().then(function(t){ b.setMd('❌ ' + t); });
+        return readSSE(res, function(event, data){
+          if (event === 'start') previewConv = data.conversation_id;
+          else if (event === 'delta') { raw += data.content; b.setMd(raw, true); }
+          else if (event === 'tool_call') b.bub.appendChild(el('div', { class: 'toolinfo', text: '🔧 ' + data.name }));
+          else if (event === 'error') b.setMd(raw + '\\n\\n❌ ' + data.error);
+        }).then(function(){ b.setMd(raw || '(trống)'); });
+      }).catch(function(){ b.setMd(raw || '⏹'); });
+    }
+
+    ide.appendChild(col1); ide.appendChild(col2); ide.appendChild(col3);
+
+    function save(after) {
       try {
-        var patch = {};
-        if (C.name) { patch.name = C.name.value; patch.description = C.description.value; patch.prompt = C.prompt.value; }
-        if (C.model) {
-          var mc = {};
-          if (C.model.value.trim()) mc.model = C.model.value.trim();
-          ['temperature', 'max_tokens', 'top_p', 'frequency_penalty', 'presence_penalty', 'history_rounds'].forEach(function(k){
-            if (C[k] && C[k].value !== '') mc[k] = Number(C[k].value);
-          });
-          if (C.response_format.value !== 'text') mc.response_format = C.response_format.value;
-          patch.model = mc;
-        }
-        if (C.datasets) {
-          patch.dataset_ids = C.datasets.getIds();
-          patch.workflow_ids = C.workflows.getIds();
-          patch.database_ids = C.databases.getIds();
-          patch.plugin_tool_ids = C.tools.getIds();
-          var kb = {};
-          if (C.kb_top_k.value !== '') kb.top_k = Number(C.kb_top_k.value);
-          if (C.kb_min_score.value !== '') kb.min_score = Number(C.kb_min_score.value);
-          kb.search_type = C.kb_search.value;
-          if (C.kb_auto.value === 'tool') kb.auto = false;
-          if (C.kb_rerank.value === '1') kb.rerank = true;
-          patch.knowledge = kb;
-        }
-        if (C.welcome) {
-          patch.welcome_message = C.welcome.value;
-          patch.suggested_questions = C.questions.getItems();
-          patch.suggest_reply = { mode: C.sr_mode.value, prompt: C.sr_prompt.value };
-          patch.onboarding = { mode: C.ob_mode.value, prompt: C.ob_prompt.value };
-        }
-        if (C.variables) {
-          patch.variables = JSON.parse(C.variables.value || '{}');
-          patch.shortcuts = JSON.parse(C.shortcuts.value || '[]');
-          patch.multi_agent = JSON.parse(C.multi_agent.value || '{}');
-        }
+        var patch = {
+          name: nameIn.value,
+          description: C.description.value,
+          prompt: C.prompt.value,
+          model: mc,
+          plugin_tool_ids: C.tools.getIds(),
+          workflow_ids: C.workflows.getIds(),
+          dataset_ids: C.datasets.getIds(),
+          database_ids: C.databases.getIds(),
+          welcome_message: C.welcome.value,
+          suggested_questions: C.questions.getItems(),
+          suggest_reply: { mode: C.sr_mode.value, prompt: C.sr_prompt.value },
+          onboarding: { mode: C.ob_mode.value, prompt: C.ob_prompt.value },
+          variables: JSON.parse(C.variables.value || '{}'),
+          shortcuts: JSON.parse(C.shortcuts.value || '[]'),
+          multi_agent: JSON.parse(C.multi_agent.value || '{}')
+        };
+        var kbc = {};
+        if (C.kb_top_k.value !== '') kbc.top_k = Number(C.kb_top_k.value);
+        if (C.kb_min_score.value !== '') kbc.min_score = Number(C.kb_min_score.value);
+        kbc.search_type = C.kb_search.value;
+        if (C.kb_auto.value === 'tool') kbc.auto = false;
+        if (C.kb_rerank.value === '1') kbc.rerank = true;
+        patch.knowledge = kbc;
         wapi('PATCH', '/agents/' + id, patch).then(function(updated){
           draft = JSON.parse(JSON.stringify(updated));
           toast('✅ Đã lưu', 'ok');
+          if (after) after();
         }).catch(err);
       } catch (e) { err(e); }
     }
-    show('Persona');
   }).catch(err);
 }
-
 /* ================= chat ================= */
 RENDER.chat = function() {
   var m = main();
