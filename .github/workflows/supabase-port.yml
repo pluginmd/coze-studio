@@ -25,4 +25,5 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm test
+      - run: npm run test:db
       - run: npx wrangler deploy --dry-run --outdir=dist

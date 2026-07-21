@@ -173,7 +173,11 @@ supabase-port/
     │   │                          # database, docparse, expr, chatservice,
     │   │                          # agenttools, agentloop
     │   └── routes/                # REST + SSE chat + oauth + share public
-    └── test/smoke.mts             # npm test: engine, expr, parse, db, csv
+    └── test/
+        ├── smoke.mts              # npm test: engine, expr, parse, import, csv
+        └── migrations.mts         # npm run test:db: apply 6 migrations trên
+                                   # PGlite (Postgres WASM + pgvector) + test
+                                   # match_chunks/triggers/constraints thật
 ```
 
 ## Triển khai

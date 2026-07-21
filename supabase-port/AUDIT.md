@@ -277,6 +277,7 @@ Parity backend sau đợt 2: **~70%**.
 | System variables `{{sys.time/date/user_key/conversation_id/agent_name}}` trong chat + workflow | ✅ |
 | 3 product plugins keyless cài 1 click (Open-Meteo, Wikipedia, Hacker News) | ✅ |
 | **Verify bundle Worker**: `wrangler deploy --dry-run` pass — 854KB gzip (limit 3MB free), unpdf/WASM OK; thêm vào CI | ✅ |
+| **Verify migrations trên Postgres thật** (PGlite+pgvector): 6/6 apply sạch; match_chunks 3 search types + RRF + min_score, triggers, nulls-not-distinct, constraints đều pass; thêm vào CI (`npm run test:db`) | ✅ |
 
 Còn lại chưa port (chấp nhận, giá trị thấp hoặc phụ thuộc ngoài):
 marketplace cộng đồng đầy đủ, 18 product plugins Trung Quốc, ppstructure
