@@ -4,6 +4,7 @@ import { chatComplete, contentText, type Usage } from '../lib/openai'
 import { retrieve } from '../lib/retrieval'
 import { invokeTool, type PluginRow, type ToolRow } from '../lib/plugins'
 import { isOAuthConfig, getAccessToken } from '../lib/oauth'
+import { resolvePluginAuth } from '../lib/vaultauth'
 import {
   queryRows,
   validateRow,
@@ -545,6 +546,7 @@ async function execNode(
         .eq('id', tool.plugin_id)
         .maybeSingle()
       if (!plugin) throw new Error(`plugin not found for tool: ${data.tool_id}`)
+      await resolvePluginAuth(ctx.supabase, plugin)
       let extraHeaders: Record<string, string> | undefined
       if (isOAuthConfig(plugin.auth)) {
         const token = await getAccessToken(

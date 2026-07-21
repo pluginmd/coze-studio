@@ -3,6 +3,8 @@ import { cors } from 'hono/cors'
 import type { AppEnv, Env, IndexJob } from './env'
 import { auth, requireWorkspace } from './middleware/auth'
 import { indexDocument } from './indexer'
+import { adminClient } from './lib/supabase'
+import { drainIndexQueue } from './lib/queue'
 import { consoleHtml } from './console'
 import { me } from './routes/me'
 import { workspacesRoot, workspaceScoped } from './routes/workspaces'
@@ -77,5 +79,12 @@ export default {
         message.retry()
       }
     }
+  },
+
+  // Cron trigger — drains the Supabase Queues (pgmq) tier when Cloudflare
+  // Queues aren't bound (free plan): fully-Supabase async indexing.
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    if (env.INDEX_QUEUE) return // CF Queues handle async work already
+    await drainIndexQueue(env, adminClient(env)).catch(() => undefined)
   },
 } satisfies ExportedHandler<Env, IndexJob>

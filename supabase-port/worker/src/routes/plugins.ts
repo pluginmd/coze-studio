@@ -4,6 +4,7 @@ import { pick } from '../lib/util'
 import { invokeTool, type PluginRow, type ToolRow } from '../lib/plugins'
 import { isOAuthConfig, getAccessToken } from '../lib/oauth'
 import { importPluginSpec } from '../lib/pluginimport'
+import { resolvePluginAuth } from '../lib/vaultauth'
 
 const PLUGIN_FIELDS = ['name', 'description', 'base_url', 'auth']
 const TOOL_FIELDS = ['name', 'description', 'method', 'path', 'parameters']
@@ -137,6 +138,7 @@ plugins.post('/:pid/mcp/sync', async (c) => {
     .maybeSingle()
   if (!plugin) return c.json({ error: 'plugin not found' }, 404)
   if (plugin.kind !== 'mcp') return c.json({ error: 'not an mcp plugin' }, 400)
+  await resolvePluginAuth(supabase, plugin)
 
   const { McpClient, mapMcpTools } = await import('../lib/mcp')
   const client = new McpClient(plugin.base_url, (plugin.auth?.headers ?? {}) as Record<string, string>)
@@ -172,6 +174,36 @@ plugins.post('/:pid/mcp/sync', async (c) => {
   const stale = [...byPath.values()]
   if (stale.length) await supabase.from('plugin_tools').delete().in('id', stale)
   return c.json({ ok: true, added, updated, removed: stale.length })
+})
+
+// Move this plugin's auth config into Supabase Vault (encrypted at rest).
+plugins.post('/:pid/vault', async (c) => {
+  const supabase = c.get('supabase')
+  const { data: plugin } = await supabase
+    .from('plugins')
+    .select('id, auth')
+    .eq('id', c.req.param('pid')!)
+    .eq('workspace_id', c.req.param('wid')!)
+    .maybeSingle()
+  if (!plugin) return c.json({ error: 'plugin not found' }, 404)
+  if ((plugin.auth as { type?: string } | null)?.type === 'vault') {
+    return c.json({ ok: true, already_vaulted: true })
+  }
+  const { data: vaultId, error } = await supabase.rpc('vault_set', {
+    p_secret: JSON.stringify(plugin.auth ?? { type: 'none' }),
+  })
+  if (error || !vaultId) {
+    return c.json(
+      { error: 'vault unavailable — enable the supabase_vault extension and re-run migration 0007' },
+      400
+    )
+  }
+  const { error: upError } = await supabase
+    .from('plugins')
+    .update({ auth: { type: 'vault', vault_id: vaultId } })
+    .eq('id', plugin.id)
+  if (upError) return c.json({ error: upError.message }, 500)
+  return c.json({ ok: true, vault_id: vaultId })
 })
 
 // Publish: snapshot plugin + tools as a version. All active tools must have
@@ -356,6 +388,11 @@ plugins.post('/:pid/tools/:tid/invoke', async (c) => {
     .eq('id', tool.plugin_id)
     .maybeSingle()
   if (!plugin) return c.json({ error: 'plugin not found' }, 404)
+  try {
+    await resolvePluginAuth(supabase, plugin)
+  } catch (e) {
+    return c.json({ error: String(e instanceof Error ? e.message : e) }, 502)
+  }
   const body = await c.req
     .json<{ args?: Record<string, unknown>; user_key?: string }>()
     .catch(() => ({}) as any)

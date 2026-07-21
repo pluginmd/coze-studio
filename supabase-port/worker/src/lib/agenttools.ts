@@ -3,6 +3,7 @@ import type { Env } from '../env'
 import type { AgentTool } from './agentloop'
 import { invokeTool, type PluginRow, type ToolRow } from './plugins'
 import { isOAuthConfig, getAccessToken } from './oauth'
+import { resolvePluginAuth } from './vaultauth'
 import { queryRows, validateRow, assertWritable, type DbColumn, type DbFilter, type RwMode } from './database'
 import { runWorkflow, type WfGraph } from '../engine/workflow'
 
@@ -58,7 +59,10 @@ export async function buildAgentTools(
         .select()
         .in('id', pluginIds)
         .eq('workspace_id', workspaceId)
-      for (const p of (pluginRows ?? []) as PluginRow[]) pluginsById.set(p.id, p)
+      for (const p of (pluginRows ?? []) as PluginRow[]) {
+        await resolvePluginAuth(supabase, p as unknown as Record<string, unknown>)
+        pluginsById.set(p.id, p)
+      }
     }
     for (const tool of (toolRows ?? []) as ToolRow[]) {
       const plugin = pluginsById.get(tool.plugin_id)

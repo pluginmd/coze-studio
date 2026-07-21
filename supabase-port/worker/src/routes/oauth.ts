@@ -3,6 +3,7 @@ import { SignJWT, jwtVerify } from 'jose'
 import type { AppEnv, Env } from '../env'
 import { adminClient } from '../lib/supabase'
 import { isOAuthConfig, exchangeCode, storeToken } from '../lib/oauth'
+import { resolvePluginAuth } from '../lib/vaultauth'
 
 function stateSecret(env: Env): Uint8Array {
   return new TextEncoder().encode(env.SUPABASE_JWT_SECRET)
@@ -22,6 +23,7 @@ oauthWs.get('/url', async (c) => {
     .eq('workspace_id', wid)
     .maybeSingle()
   if (!plugin) return c.json({ error: 'plugin not found' }, 404)
+  await resolvePluginAuth(c.get('supabase'), plugin)
   if (!isOAuthConfig(plugin.auth)) return c.json({ error: 'plugin is not configured for oauth2' }, 400)
 
   const userKey =
@@ -94,6 +96,7 @@ oauthCallback.get('/callback', async (c) => {
     .eq('id', pid)
     .eq('workspace_id', wid)
     .maybeSingle()
+  if (plugin) await resolvePluginAuth(supabase, plugin).catch(() => undefined)
   if (!plugin || !isOAuthConfig(plugin.auth)) {
     return c.html('<h3>Plugin not found or not oauth2.</h3>', 404)
   }

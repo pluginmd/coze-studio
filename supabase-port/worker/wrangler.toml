@@ -4,9 +4,12 @@ main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Async document indexing (replaces NSQ). Requires a paid CF plan for Queues;
-# without the queue binding the Worker falls back to ctx.waitUntil() inline
-# processing, so the free plan works too — just delete this block.
+# Async document indexing (replaces NSQ). Three tiers, auto-selected:
+#   1. Cloudflare Queues (block below; requires paid CF plan)
+#   2. Supabase Queues (pgmq) drained by the cron trigger — free plan OK,
+#      enabled automatically when migration 0007 finds pgmq on the project
+#   3. inline ctx.waitUntil() as last resort
+# On the CF free plan just delete the [[queues.*]] blocks and keep the cron.
 [[queues.producers]]
 queue = "doc-index"
 binding = "INDEX_QUEUE"
@@ -15,6 +18,9 @@ binding = "INDEX_QUEUE"
 queue = "doc-index"
 max_batch_size = 5
 max_retries = 3
+
+[triggers]
+crons = ["*/2 * * * *"]
 
 [vars]
 CHAT_MODEL = "gpt-4o-mini"

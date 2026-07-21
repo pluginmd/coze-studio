@@ -24,6 +24,31 @@ serverless toàn phần, chi phí vận hành gần bằng 0 khi idle.
 | Embedding tự host | **Jina AI** (`jina-embeddings-v3`, 1024 dim) | task-aware: `retrieval.passage` / `retrieval.query` |
 | Multi-provider LLM | **OpenAI** (hoặc bất kỳ endpoint OpenAI-compatible) | `OPENAI_BASE_URL` tùy chỉnh được |
 
+## Khai thác Supabase stack — mảng nào dùng, mảng nào không, vì sao
+
+| Mảng Supabase | Trạng thái | Dùng vào việc gì / vì sao bỏ |
+|---|---|---|
+| **Postgres** | ✅ sâu | 26 bảng, RPC, triggers, generated columns (tsvector), check constraints, `UNIQUE NULLS NOT DISTINCT` |
+| **pgvector** | ✅ sâu | `vector(1024)` + HNSW cosine, thay Milvus |
+| **Full-text search** | ✅ sâu | tsvector + GIN + `websearch_to_tsquery`, thay Elasticsearch |
+| **RLS** | ✅ sâu | policy trên toàn bộ bảng + storage objects — multi-tenant cứng ở tầng DB |
+| **Auth (GoTrue)** | ✅ | email/password, JWT verify tại edge — cả HS256 legacy **lẫn JWKS asymmetric**; social OAuth bật được từ dashboard không cần đổi code |
+| **Storage** | ✅ | 2 buckets (knowledge, files), signed URLs 7d, policy theo prefix workspace, **image transformations** qua `/files/sign` (width/height/quality) |
+| **Database Functions/RPC** | ✅ | `match_chunks` (hybrid RRF trong 1 SQL), queue/vault wrappers |
+| **Supabase Queues (pgmq)** | ✅ mới | tầng queue thứ 2 cho doc indexing: `enqueue` ưu tiên CF Queues → **pgmq** (Worker cron drain mỗi 2') → inline. CF free plan vẫn có async thật |
+| **pg_cron** | ✅ mới | 3 job dọn dẹp trong DB: token OAuth chết, workflow_runs >90d, usage_events >1 năm |
+| **Vault** | ✅ mới | `POST /plugins/:pid/vault` chuyển auth secrets vào vault mã hóa at-rest; runtime tự resolve qua `vault_get` (service role) |
+| **Realtime** | ✅ một phần | publication cho `documents`/`workflow_runs`/`messages` — client tùy chỉnh subscribe bằng user JWT (RLS áp dụng) để nhận trạng thái index/run/message live; console vẫn dùng SSE+polling (đủ dùng, không thêm dependency) |
+| **PostgREST auto API** | ⚠️ chủ đích | RLS bảo vệ truy cập trực tiếp nhưng luồng chính đi qua Worker (auth thống nhất, metering, OAuth); frontend riêng có thể query đọc trực tiếp |
+| **Edge Functions (Deno)** | ❌ chủ đích | CF Worker đã là compute layer — chạy 2 runtime là phức tạp hóa, ngược yêu cầu tinh gọn |
+| **pg_graphql** | ❌ | không có client GraphQL |
+| **Wrappers (FDW), PostGIS, pgaudit** | ❌ | chưa có use case; bật sau được không đổi schema |
+| **Branching / read replicas** | ❌ devops | bật từ dashboard khi cần scale, không ảnh hưởng code |
+
+> Migration `0007_supabase_stack.sql` **tự dò extension**: có pgmq/pg_cron/vault/
+> realtime thì kích hoạt, không có thì bỏ qua êm (đã test apply trên Postgres
+> trần không có extension nào — vẫn sạch).
+
 ## Kiến trúc
 
 ```mermaid

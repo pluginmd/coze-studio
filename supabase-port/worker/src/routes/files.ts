@@ -32,15 +32,28 @@ files.post('/', async (c) => {
   return c.json({ path, url: signed?.signedUrl ?? null, size: bytes.byteLength }, 201)
 })
 
-// Re-sign an existing path (URLs expire after 7 days).
+// Re-sign an existing path (URLs expire after 7 days). Optional width/
+// height/quality use Supabase Storage image transformations (Pro plan).
 files.post('/sign', async (c) => {
   const wid = c.req.param('wid')!
-  const body = await c.req.json<{ path?: string }>().catch(() => ({}) as any)
+  const body = await c.req
+    .json<{ path?: string; width?: number; height?: number; quality?: number }>()
+    .catch(() => ({}) as any)
   if (!body.path?.startsWith(`${wid}/`)) return c.json({ error: 'path must belong to this workspace' }, 400)
+  const transform =
+    body.width || body.height || body.quality
+      ? {
+          transform: {
+            ...(body.width ? { width: Number(body.width) } : {}),
+            ...(body.height ? { height: Number(body.height) } : {}),
+            ...(body.quality ? { quality: Number(body.quality) } : {}),
+          },
+        }
+      : undefined
   const { data: signed, error } = await c
     .get('supabase')
     .storage.from('files')
-    .createSignedUrl(body.path, SIGN_TTL_SECONDS)
+    .createSignedUrl(body.path, SIGN_TTL_SECONDS, transform)
   if (error || !signed) return c.json({ error: error?.message ?? 'file not found' }, 404)
   return c.json({ path: body.path, url: signed.signedUrl })
 })

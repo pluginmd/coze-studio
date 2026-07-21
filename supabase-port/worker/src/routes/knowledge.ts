@@ -1,9 +1,9 @@
 import { Hono } from 'hono'
 import type { AppEnv } from '../env'
 import { pick } from '../lib/util'
-import { indexDocument } from '../indexer'
 import { retrieve } from '../lib/retrieval'
 import { embedTexts } from '../lib/jina'
+import { enqueueIndexJob } from '../lib/queue'
 
 const DATASET_FIELDS = [
   'name',
@@ -151,12 +151,8 @@ knowledge.post('/:dsid/documents', async (c) => {
     .single()
   if (error) return c.json({ error: error.message }, 500)
 
-  if (c.env.INDEX_QUEUE) {
-    await c.env.INDEX_QUEUE.send({ documentId: docId, workspaceId: wid })
-  } else {
-    c.executionCtx.waitUntil(indexDocument(c.env, docId))
-  }
-  return c.json(doc, 201)
+  const via = await enqueueIndexJob(c.env, supabase, docId, wid, (p) => c.executionCtx.waitUntil(p))
+  return c.json({ ...doc, indexing_via: via }, 201)
 })
 
 knowledge.post('/:dsid/documents/:docid/reindex', async (c) => {
@@ -172,12 +168,8 @@ knowledge.post('/:dsid/documents/:docid/reindex', async (c) => {
     .maybeSingle()
   if (!doc) return c.json({ error: 'document not found' }, 404)
   await supabase.from('documents').update({ status: 'pending', error: null }).eq('id', docId)
-  if (c.env.INDEX_QUEUE) {
-    await c.env.INDEX_QUEUE.send({ documentId: docId, workspaceId: wid })
-  } else {
-    c.executionCtx.waitUntil(indexDocument(c.env, docId))
-  }
-  return c.json({ ok: true })
+  const via = await enqueueIndexJob(c.env, supabase, docId, wid, (p) => c.executionCtx.waitUntil(p))
+  return c.json({ ok: true, indexing_via: via })
 })
 
 knowledge.delete('/:dsid/documents/:docid', async (c) => {

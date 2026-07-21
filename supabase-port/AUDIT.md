@@ -279,6 +279,17 @@ Parity backend sau đợt 2: **~70%**.
 | **Verify bundle Worker**: `wrangler deploy --dry-run` pass — 854KB gzip (limit 3MB free), unpdf/WASM OK; thêm vào CI | ✅ |
 | **Verify migrations trên Postgres thật** (PGlite+pgvector): 6/6 apply sạch; match_chunks 3 search types + RRF + min_score, triggers, nulls-not-distinct, constraints đều pass; thêm vào CI (`npm run test:db`) | ✅ |
 
+### Đợt vét 5 (batch 14) — khai thác sâu hạ tầng Supabase
+
+| Hạng mục | Trạng thái |
+|---|---|
+| **Supabase Queues (pgmq)**: tầng queue thứ 2 (CF → pgmq → inline), Worker cron drain — async thật trên CF free plan | ✅ |
+| **pg_cron**: 3 job dọn dẹp định kỳ trong DB (token chết, runs cũ, usage cũ) | ✅ |
+| **Vault**: plugin auth secrets mã hóa at-rest (`/plugins/:pid/vault`), runtime tự resolve — đóng gap bảo mật đã flag từ đầu | ✅ |
+| **Realtime publication**: documents/workflow_runs/messages stream được cho client có JWT (RLS áp dụng) | ✅ |
+| **Storage image transforms** qua `/files/sign` | ✅ |
+| Migration 0007 guarded — apply sạch cả trên Postgres không có extension (verified PGlite) | ✅ |
+
 Còn lại chưa port (chấp nhận, giá trị thấp hoặc phụ thuộc ngoài):
 marketplace cộng đồng đầy đủ, 18 product plugins Trung Quốc, ppstructure
 accurate parsing (cần model layout ngoài), QuickJS code node (expression

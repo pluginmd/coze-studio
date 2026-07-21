@@ -1,8 +1,9 @@
 export interface PluginAuth {
-  type: 'none' | 'api_key' | 'oauth2'
+  type: 'none' | 'api_key' | 'oauth2' | 'vault'
   in?: 'header' | 'query'
   name?: string
   value?: string
+  vault_id?: string // type 'vault': real auth JSON encrypted in Supabase Vault
   [key: string]: unknown
 }
 
