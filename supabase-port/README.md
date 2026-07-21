@@ -16,6 +16,8 @@ serverless toàn phần, chi phí vận hành gần bằng 0 khi idle.
 | MinIO | **Supabase Storage** (bucket `knowledge`) | key theo prefix `workspace_id/` |
 | NSQ (message queue) | **Cloudflare Queues** | fallback `ctx.waitUntil()` cho free plan |
 | Python parser sidecar (PDF/DOCX) | **Parse tại edge**: `unpdf` (PDF), `fflate` (DOCX/XLSX) | không cần sidecar |
+| OCR sidecar (ppocr/veocr) | **OpenAI vision** | ảnh png/jpg/webp/gif OCR khi index |
+| Frontend IDE (259 packages) | **Admin console 1 file** tại `/` + trang chat public `/share/:token` | JSON editor thay drag-drop |
 | Redis | *(bỏ)* | Worker stateless; Postgres đủ nhanh cho quy mô này |
 | etcd | *(bỏ)* | config qua `wrangler.toml` + secrets |
 | Casbin / session | **Supabase Auth + RLS** | JWT verify tại edge, RLS chặn cross-tenant |
@@ -51,8 +53,8 @@ flowchart LR
 
 ### RAG pipeline (knowledge)
 
-1. Upload tài liệu — **PDF, DOCX, XLSX**, txt/md/html/json/csv — vào Supabase
-   Storage (text hoặc `content_base64`).
+1. Upload tài liệu — **PDF, DOCX, XLSX, ảnh (OCR qua OpenAI vision)**,
+   txt/md/html/json/csv — vào Supabase Storage (text hoặc `content_base64`).
 2. Queue consumer (hoặc `waitUntil` trên free plan): parse theo định dạng →
    chunk (paragraph-aware, overlap) → **Jina embeddings** (batch 32) → insert
    `chunks` (pgvector).
@@ -83,7 +85,7 @@ phụ thuộc chạy đồng thời; nhánh không được chọn bị prune la
 đứng một mình). Mỗi run ghi `workflow_runs` đầy đủ input/output/node_results
 (kể cả khi fail), LLM usage cộng dồn vào `usage_events`.
 
-**23 node types**:
+**27 node types**:
 
 | Nhóm | Node |
 |---|---|
@@ -91,8 +93,14 @@ phụ thuộc chạy đồng thời; nhánh không được chọn bị prune la
 | AI | `llm`, `intent` (phân loại intent, tự branch theo edge label) |
 | Knowledge | `knowledge_retrieve`, `knowledge_index` (ghi text vào dataset), `knowledge_delete` |
 | Database | `database_query`, `database_insert`, `database_update`, `database_delete` |
+| Hội thoại | `conversation_create`, `message_create`, `message_list` |
 | Tích hợp | `plugin` (kèm OAuth2), `http` (request tự do, timeout) |
-| Dữ liệu | `template`, `text_processor` (concat/split/replace/substring/case/trim), `json_parse`, `json_stringify`, `variable_aggregator` |
+| Dữ liệu | `template`, `code` (biểu thức an toàn — AST interpreter, không eval), `text_processor` (concat/split/replace/substring/case/trim), `json_parse`, `json_stringify`, `variable_aggregator` |
+
+`code` node: Workers cấm `eval`, nên biểu thức được parse thành AST (jsep) và
+thông dịch với whitelist ~30 hàm (`sum`, `pluck`, `split`, `get`, ...) — chặn
+prototype access, giới hạn độ phức tạp. Không phải JS tùy ý nhưng đủ cho
+transform dữ liệu thường gặp.
 
 Giới hạn an toàn: 500 node/run, 100 waves, sub-workflow depth 3, loop/batch ≤ 100 items.
 
@@ -101,8 +109,27 @@ Giới hạn an toàn: 500 node/run, 100 waves, sub-workflow depth 3, loop/batch
 - **Agent databases**: bảng dữ liệu do user khai báo cột (`text/number/boolean/
   date`, required), rows JSONB validate + coerce kiểu ở Worker. Agent
   query/insert qua tool; workflow thao tác qua 4 node database.
+- **Import bảng** (table-mode knowledge): upload XLSX/CSV/TSV → header thành
+  cột (tự suy kiểu number/text) → rows import theo batch (tối đa 5000).
 - **User variables**: biến dài hạn theo `(workspace, agent?, user_key, name)`,
   inject vào system prompt mỗi lượt chat.
+
+### Publish agent (connector domain)
+
+`POST /agents/:id/share` sinh share token → trang chat công khai
+`/share/<token>` (không cần đăng nhập, SSE streaming, welcome + suggested
+questions). End-user được scope bằng session id (`share:<session>`) cho
+memory/OAuth. Thu hồi bằng `DELETE /agents/:id/share`. *(Chưa có rate limit
+per-IP — cân nhắc Cloudflare WAF rule khi chạy production.)*
+
+### Admin console
+
+Worker serve SPA 1 file tại `/`: đăng nhập (paste token hoặc email/password
+qua Supabase Auth), quản lý agents (edit/publish/share/chat thử), knowledge
+(upload + xem trạng thái index + test hybrid search), workflows (JSON editor +
+run + xem kết quả), plugins (+OAuth connect, invoke thử), databases (+import
+xlsx/csv, xem/sửa rows), prompts, API keys, usage, search. Các trường cấu trúc
+sửa qua JSON editor — không phải visual editor kéo-thả như IDE gốc.
 
 ## Cấu trúc thư mục
 
@@ -112,19 +139,21 @@ supabase-port/
 │   ├── config.toml                # local dev (supabase start)
 │   └── migrations/
 │       ├── 0001_init.sql          # schema lõi + RLS + hybrid search RPC
-│       └── 0002_domains.sql       # memory, oauth tokens, prompts, shortcuts
+│       ├── 0002_domains.sql       # memory, oauth tokens, prompts, shortcuts
+│       └── 0003_share.sql         # share token (publish agent công khai)
 └── worker/
     ├── wrangler.toml              # 1 Worker + 1 Queue
     ├── src/
     │   ├── index.ts               # router + queue consumer
     │   ├── indexer.ts             # pipeline embedding tài liệu
-    │   ├── engine/workflow.ts     # DAG engine v2 (23 node types)
+    │   ├── console.ts             # admin console SPA tại /
+    │   ├── engine/workflow.ts     # DAG engine v2 (27 node types)
     │   ├── middleware/auth.ts     # JWT + API key + tenant guard
     │   ├── lib/                   # openai, jina, retrieval, plugins, oauth,
-    │   │                          # database, docparse, agenttools, agentloop
-    │   ├── routes/                # REST + SSE chat + oauth callback
-    │   └── playground.ts          # UI chat test tại /
-    └── test/smoke.mts             # npm test: engine, parse, db, templating
+    │   │                          # database, docparse, expr, chatservice,
+    │   │                          # agenttools, agentloop
+    │   └── routes/                # REST + SSE chat + oauth + share public
+    └── test/smoke.mts             # npm test: engine, expr, parse, db, csv
 ```
 
 ## Triển khai
@@ -193,6 +222,9 @@ Hoặc mở `https://<worker-url>/` — playground chat có sẵn.
 | GET/DELETE | `.../plugins/:pid/oauth/url`, `/status`, `/` | OAuth2 per-user |
 | GET | `/oauth/callback` | public redirect (state ký HS256) |
 | CRUD | `.../databases[/:dbid]` + rows, `rows/query` | memory: bảng dữ liệu |
+| POST | `.../databases/import` | import XLSX/CSV/TSV thành database |
+| POST/DELETE | `.../agents/:id/share` | publish / thu hồi share link |
+| GET/POST | `/share/:token[/info\|/chat]` | public: trang chat + SSE (không auth) |
 | GET/PUT/DELETE | `.../variables[/:id]` | memory: user variables |
 | CRUD | `.../prompts[/:id]` | thư viện prompt |
 | GET | `.../search?q=` | tìm resource toàn workspace |
@@ -200,24 +232,25 @@ Hoặc mở `https://<worker-url>/` — playground chat có sẵn.
 
 ## Phạm vi so với bản gốc
 
-**Đã port** (backend ~246 routes gốc → ~70 endpoints tinh gọn): multi-tenant
-workspaces, agents (prompt/model/publish/shortcuts), chat streaming + 3 loại
-tool, knowledge RAG (PDF/DOCX/XLSX/text, hybrid search), workflow DAG engine
-23/42 node types, HTTP plugins + OAuth2, memory (databases + user variables),
-prompt library, resource search, API keys, usage metering, auth + RLS.
+**Đã port** (backend ~246 routes gốc → ~80 endpoints tinh gọn): multi-tenant
+workspaces, agents (prompt/model/publish/shortcuts/**share công khai**), chat
+streaming + 3 loại tool, knowledge RAG (PDF/DOCX/XLSX/**ảnh OCR**/text, hybrid
+search), workflow DAG engine **27/42 node types** (kèm `code` node biểu thức
+an toàn), HTTP plugins + OAuth2, memory (databases + **import bảng** + user
+variables), prompt library, resource search, API keys, usage metering,
+auth + RLS, **admin console** + trang chat public.
 
 **Chưa port** (chủ đích, ngoài phạm vi lean):
 
-- Frontend IDE React 259-package (visual editors, debug panel) — playground
-  chat thay thế; frontend cũ có thể trỏ dần sang API mới
-- Workflow: `code_runner` (Workers cấm eval; cần QuickJS WASM nếu muốn),
-  `question_answer` tương tác giữa run, message/conversation nodes trong
-  workflow
-- Knowledge: OCR ảnh (gốc dùng ppocr/veocr), table-mode xlsx thành structured
-  knowledge (xlsx hiện parse thành text)
-- App packaging (đóng gói multi-agent app), connector publish ra kênh ngoài,
-  template marketplace, datacopy
-- Plugin secret hiện lưu plaintext trong Postgres (có RLS); nâng cấp Supabase
+- Visual editor kéo-thả cho workflow/agent (console dùng JSON editor; graph
+  format tương thích nếu sau này muốn gắn React Flow)
+- Workflow: `question_answer` (pause/resume tương tác giữa run — engine hiện
+  chạy đồng bộ), `code` node là expression subset chứ không phải JS tùy ý
+  (muốn full JS cần QuickJS WASM)
+- App packaging (đóng gói multi-agent app), template marketplace, datacopy;
+  connector mới có web share link (chưa có Slack/Telegram/...)
+- Share link chưa có rate limit per-IP (dùng Cloudflare WAF khi production)
+- Plugin secret lưu plaintext trong Postgres (có RLS); nâng cấp Supabase
   Vault nếu cần mã hóa at-rest
 
 ## Dev local

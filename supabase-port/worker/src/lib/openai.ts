@@ -81,6 +81,45 @@ export async function chatComplete(env: Env, opts: ChatOptions): Promise<ChatRes
   }
 }
 
+// Vision-based OCR (replaces the ppocr/veocr sidecars): sends the image to an
+// OpenAI-compatible vision model and returns the transcribed text.
+export async function ocrImage(env: Env, bytes: Uint8Array, mime: string): Promise<string> {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 8192) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+  }
+  const dataUrl = `data:${mime};base64,${btoa(binary)}`
+  const res = await fetch(`${baseUrl(env)}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: env.CHAT_MODEL || 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text:
+                'Transcribe ALL text visible in this image verbatim, preserving reading order ' +
+                'and line breaks. Output only the transcribed text, nothing else.',
+            },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(`ocr failed: ${res.status} ${(await res.text()).slice(0, 300)}`)
+  }
+  const json = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+  return json.choices?.[0]?.message?.content ?? ''
+}
+
 export type StreamEvent =
   | { type: 'delta'; content: string }
   | { type: 'done'; result: ChatResult }

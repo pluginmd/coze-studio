@@ -25,7 +25,7 @@ export async function indexDocument(env: Env, documentId: string): Promise<void>
       .download(doc.storage_path)
     if (dlError || !blob) throw new Error(`storage download failed: ${dlError?.message ?? 'no data'}`)
 
-    const text = await parseDocument(new Uint8Array(await blob.arrayBuffer()), doc.name)
+    const text = await parseDocument(new Uint8Array(await blob.arrayBuffer()), doc.name, env)
     const { data: dataset } = await supabase
       .from('datasets')
       .select('chunk_size, chunk_overlap')

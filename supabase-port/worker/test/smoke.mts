@@ -132,4 +132,49 @@ try {
   assert(e.nodeResults?.start, 'nodeResults attached to error')
 }
 
+// --- expression evaluator (code node) ---------------------------------------
+const { evalExpression } = await import('../src/lib/expr')
+assert.strictEqual(evalExpression('1 + 2 * 3', {}), 7)
+assert.strictEqual(evalExpression('a > 5 ? "big" : "small"', { a: 9 }), 'big')
+assert.strictEqual(evalExpression('upper(trim(name))', { name: '  an  ' }), 'AN')
+assert.strictEqual(evalExpression('sum(pluck(items, "qty"))', { items: [{ qty: 2 }, { qty: 3 }] }), 5)
+assert.deepStrictEqual(evalExpression('unique(flatten([[1,2],[2,3]]))', {}), [1, 2, 3])
+assert.strictEqual(evalExpression('coalesce(missing, "fallback")', { missing: null }), 'fallback')
+assert.strictEqual(evalExpression('get(o, "a.b")', { o: { a: { b: 42 } } }), 42)
+assert.throws(() => evalExpression('x.__proto__', { x: {} }), /forbidden/, 'proto blocked')
+assert.throws(() => evalExpression('fetch("http://x")', {}), /unknown function/, 'no arbitrary calls')
+assert.throws(() => evalExpression('nope + 1', {}), /unknown identifier/, 'unknown vars rejected')
+
+// --- csv / table parsing ----------------------------------------------------
+const { csvRows, parseTable } = await import('../src/lib/docparse')
+assert.deepStrictEqual(
+  csvRows('name,qty\n"Nguyễn, An","5"\nB,"say ""hi"""'),
+  [['name', 'qty'], ['Nguyễn, An', '5'], ['B', 'say "hi"']],
+  'csv quotes/commas/escapes'
+)
+const tableFromXlsx = parseTable(xlsxBytes, 'data.xlsx')
+assert.deepStrictEqual(tableFromXlsx[0], ['Name', 'Giá'], 'xlsx table header')
+assert.throws(() => parseTable(new Uint8Array(), 'x.pdf'), /supports xlsx/, 'table format guard')
+
+// --- workflow engine: code node ---------------------------------------------
+const graph3: WfGraph = {
+  nodes: [
+    { id: 'start', type: 'start', data: {} },
+    { id: 'calc', type: 'code', data: {
+      expression: 'sum(pluck(items, "price")) * (1 + rate)',
+      args: { items: '{{input.items}}', rate: '{{input.rate}}' },
+    } },
+    { id: 'end', type: 'end', data: { outputs: { total: '{{calc.value}}' } } },
+  ],
+  edges: [
+    { source: 'start', target: 'calc' },
+    { source: 'calc', target: 'end' },
+  ],
+}
+const r5 = await runWorkflow(fakeEnv, fakeSupabase, 'ws', graph3, {
+  items: [{ price: 100 }, { price: 50 }],
+  rate: 0.1,
+})
+assert(Math.abs(Number((r5.output as any).total) - 165) < 1e-9, 'code node total ≈ 165: ' + JSON.stringify(r5.output))
+
 console.log('ALL SMOKE TESTS PASSED')

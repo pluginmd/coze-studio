@@ -3,7 +3,7 @@ import { cors } from 'hono/cors'
 import type { AppEnv, Env, IndexJob } from './env'
 import { auth, requireWorkspace } from './middleware/auth'
 import { indexDocument } from './indexer'
-import { playgroundHtml } from './playground'
+import { consoleHtml } from './console'
 import { me } from './routes/me'
 import { workspacesRoot, workspaceScoped } from './routes/workspaces'
 import { agents } from './routes/agents'
@@ -18,14 +18,16 @@ import { variables } from './routes/variables'
 import { prompts } from './routes/prompts'
 import { search } from './routes/search'
 import { oauthWs, oauthCallback } from './routes/oauth'
+import { share } from './routes/share'
 
 const app = new Hono<AppEnv>()
 
-app.get('/', (c) => c.html(playgroundHtml))
+app.get('/', (c) => c.html(consoleHtml))
 app.get('/healthz', (c) => c.json({ ok: true, service: 'coze-supabase-port' }))
 
-// Public OAuth redirect target (authorized via signed state token).
+// Public routes: OAuth redirect target (signed state) + shared agent chat.
 app.route('/oauth', oauthCallback)
+app.route('/share', share)
 
 app.use('/v1/*', cors({ origin: (origin) => origin ?? '*', allowHeaders: ['authorization', 'content-type'] }))
 app.use('/v1/*', auth)

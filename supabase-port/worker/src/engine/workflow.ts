@@ -5,6 +5,7 @@ import { retrieve } from '../lib/retrieval'
 import { invokeTool, type PluginRow, type ToolRow } from '../lib/plugins'
 import { isOAuthConfig, getAccessToken } from '../lib/oauth'
 import { queryRows, validateRow, type DbColumn, type DbFilter } from '../lib/database'
+import { evalExpression } from '../lib/expr'
 import { indexDocument } from '../indexer'
 
 // ============================================================================
@@ -594,6 +595,77 @@ async function execNode(
         values[key] = resolvePath(scope, path)
       }
       return values
+    }
+
+    // Safe expression evaluation (Workers forbid eval — AST-interpreted subset).
+    // data.args maps variable names to templates/paths; `input` and `nodes`
+    // (full scope) are always available.
+    case 'code': {
+      const vars = {
+        ...((renderDeep(data.args ?? {}, scope) ?? {}) as Record<string, unknown>),
+        input,
+        nodes: scope,
+      }
+      return { value: evalExpression(String(data.expression ?? ''), vars) }
+    }
+
+    case 'conversation_create': {
+      const agentId = renderTemplate(String(data.agent_id ?? ''), scope)
+      const { data: agent } = await ctx.supabase
+        .from('agents')
+        .select('id')
+        .eq('id', agentId)
+        .eq('workspace_id', ctx.workspaceId)
+        .maybeSingle()
+      if (!agent) throw new Error(`agent not found: ${agentId}`)
+      const { data: conv, error } = await ctx.supabase
+        .from('conversations')
+        .insert({
+          workspace_id: ctx.workspaceId,
+          agent_id: agent.id,
+          title: renderTemplate(String(data.title ?? 'workflow'), scope).slice(0, 80),
+        })
+        .select('id')
+        .single()
+      if (error) throw new Error(error.message)
+      return { conversation_id: conv.id }
+    }
+
+    case 'message_create': {
+      const conversationId = renderTemplate(String(data.conversation_id ?? ''), scope)
+      const role = String(data.role ?? 'assistant')
+      if (!['system', 'user', 'assistant'].includes(role)) throw new Error(`invalid role: ${role}`)
+      const { data: conv } = await ctx.supabase
+        .from('conversations')
+        .select('id')
+        .eq('id', conversationId)
+        .eq('workspace_id', ctx.workspaceId)
+        .maybeSingle()
+      if (!conv) throw new Error(`conversation not found: ${conversationId}`)
+      const { data: msg, error } = await ctx.supabase
+        .from('messages')
+        .insert({
+          conversation_id: conv.id,
+          workspace_id: ctx.workspaceId,
+          role,
+          content: renderTemplate(String(data.content ?? ''), scope),
+        })
+        .select('id')
+        .single()
+      if (error) throw new Error(error.message)
+      return { message_id: msg.id }
+    }
+
+    case 'message_list': {
+      const conversationId = renderTemplate(String(data.conversation_id ?? ''), scope)
+      const { data: rows } = await ctx.supabase
+        .from('messages')
+        .select('role, content, created_at')
+        .eq('conversation_id', conversationId)
+        .eq('workspace_id', ctx.workspaceId)
+        .order('created_at', { ascending: true })
+        .limit(Math.min(Number(data.limit ?? 50), 200))
+      return { messages: rows ?? [], count: rows?.length ?? 0 }
     }
 
     default:

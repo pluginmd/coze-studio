@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../env'
 import { pick } from '../lib/util'
 import { queryRows, validateRow, type DbColumn, type DbFilter } from '../lib/database'
+import { parseTable } from '../lib/docparse'
 
 const DATABASE_FIELDS = ['name', 'description', 'columns']
 
@@ -28,6 +29,68 @@ databases.post('/', async (c) => {
     .single()
   if (error) return c.json({ error: error.message }, 400)
   return c.json(data, 201)
+})
+
+// Table-mode import (xlsx/csv/tsv): header row becomes columns, remaining
+// rows become data. Creates a new database, with types inferred per column.
+databases.post('/import', async (c) => {
+  const wid = c.req.param('wid')!
+  const body = await c.req
+    .json<{ name?: string; filename?: string; content?: string; content_base64?: string }>()
+    .catch(() => ({}) as any)
+  if (!body.name || !body.filename || (!body.content && !body.content_base64)) {
+    return c.json({ error: 'name, filename and content (or content_base64) are required' }, 400)
+  }
+
+  const bytes = body.content_base64
+    ? Uint8Array.from(atob(body.content_base64), (ch) => ch.charCodeAt(0))
+    : new TextEncoder().encode(body.content)
+  let rows: string[][]
+  try {
+    rows = parseTable(bytes, body.filename)
+  } catch (e) {
+    return c.json({ error: String(e instanceof Error ? e.message : e) }, 400)
+  }
+  if (rows.length < 2) return c.json({ error: 'file needs a header row and at least one data row' }, 400)
+  if (rows.length > 5001) return c.json({ error: 'import supports at most 5000 data rows' }, 400)
+
+  const header = rows[0].map((h, i) => (h.trim() || `col_${i + 1}`).replace(/[^\w]+/g, '_').slice(0, 40))
+  const dataRows = rows.slice(1)
+  const columns: DbColumn[] = header.map((name, i) => {
+    const values = dataRows.map((r) => r[i]).filter((v) => v != null && v.trim() !== '')
+    const numeric = values.length > 0 && values.every((v) => !Number.isNaN(Number(v)))
+    return { name, type: numeric ? 'number' : 'text' }
+  })
+
+  const supabase = c.get('supabase')
+  const { data: db, error } = await supabase
+    .from('agent_databases')
+    .insert({ workspace_id: wid, name: body.name, description: `Imported from ${body.filename}`, columns })
+    .select('id')
+    .single()
+  if (error) return c.json({ error: error.message }, 400)
+
+  const createdBy = c.get('authKind') === 'user' ? c.get('userId') : 'api'
+  let inserted = 0
+  let skipped = 0
+  for (let i = 0; i < dataRows.length; i += 500) {
+    const batch = dataRows.slice(i, i + 500).flatMap((r) => {
+      try {
+        const data: Record<string, unknown> = {}
+        header.forEach((name, j) => (data[name] = r[j] ?? null))
+        return [{ database_id: db.id, workspace_id: wid, data: validateRow(columns, data), created_by: createdBy }]
+      } catch {
+        skipped++
+        return []
+      }
+    })
+    if (batch.length) {
+      const { error: insErr } = await supabase.from('agent_database_rows').insert(batch)
+      if (insErr) return c.json({ error: insErr.message, database_id: db.id, inserted }, 500)
+      inserted += batch.length
+    }
+  }
+  return c.json({ database_id: db.id, columns, inserted, skipped }, 201)
 })
 
 databases.get('/:dbid', async (c) => {

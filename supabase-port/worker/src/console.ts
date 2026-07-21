@@ -1,0 +1,552 @@
+// Lean admin console — a single-file SPA served at `/`. Covers the full API
+// surface: agents (edit/publish/share/chat), knowledge, workflows, plugins,
+// databases (+import), prompts, API keys, usage, search. No build step; JSON
+// editors are used for structured fields to stay compact.
+export const consoleHtml = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coze Supabase Port — Console</title>
+<style>
+  :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 14px; }
+  body { margin: 0; display: flex; height: 100dvh; }
+  #side { width: 190px; border-right: 1px solid #8883; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+  #side h1 { font-size: 14px; margin: 0 0 8px; }
+  #side button { text-align: left; padding: 7px 10px; border: 0; background: none; color: inherit; border-radius: 7px; cursor: pointer; font-size: 13px; }
+  #side button.active { background: #6366f133; }
+  #main { flex: 1; overflow-y: auto; padding: 18px 22px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+  th, td { border-bottom: 1px solid #8883; padding: 6px 8px; text-align: left; vertical-align: top; }
+  input, select, textarea { padding: 7px; border: 1px solid #8884; border-radius: 6px; background: transparent; color: inherit; font-size: 13px; box-sizing: border-box; }
+  textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
+  button.b { padding: 7px 14px; border-radius: 6px; border: 1px solid #8886; background: none; color: inherit; cursor: pointer; font-size: 13px; }
+  button.b.primary { background: #6366f1; border-color: #6366f1; color: #fff; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  .card { border: 1px solid #8883; border-radius: 10px; padding: 14px; margin: 10px 0; }
+  .muted { opacity: .65; font-size: 12px; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #8885; }
+  a.link { color: #6366f1; cursor: pointer; text-decoration: underline; }
+  #chatlog { border: 1px solid #8883; border-radius: 10px; padding: 12px; height: 50vh; overflow-y: auto; white-space: pre-wrap; }
+  .cu { color: #2563eb; } .ct { color: #b45309; font-size: 12px; }
+  #toast { position: fixed; bottom: 14px; right: 14px; background: #111c; color: #fff; padding: 9px 14px; border-radius: 8px; display: none; max-width: 40ch; }
+</style>
+</head>
+<body>
+<div id="side">
+  <h1>⚡ Coze Port</h1>
+  <select id="wsel" style="width:100%"></select>
+  <div style="height:8px"></div>
+</div>
+<div id="main"></div>
+<div id="toast"></div>
+<script>
+'use strict';
+var S = { token: localStorage.getItem('cz-token') || '', wid: localStorage.getItem('cz-wid') || '', view: 'agents' };
+var VIEWS = ['agents','chat','knowledge','workflows','plugins','databases','prompts','keys','usage','search','settings'];
+var LABELS = { agents:'Agents', chat:'Chat', knowledge:'Knowledge', workflows:'Workflows', plugins:'Plugins', databases:'Databases', prompts:'Prompts', keys:'API Keys', usage:'Usage', search:'Search', settings:'Settings' };
+
+function toast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(function(){ t.style.display = 'none'; }, 3500);
+}
+function api(method, path, body) {
+  return fetch('/v1' + path, {
+    method: method,
+    headers: { 'authorization': 'Bearer ' + S.token, 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  }).then(function(r){ return r.json().then(function(j){ if (!r.ok) throw new Error(j.error || r.status); return j; }); });
+}
+function wapi(method, path, body) { return api(method, '/workspaces/' + S.wid + path, body); }
+function el(tag, attrs) {
+  var e = document.createElement(tag);
+  if (attrs) Object.keys(attrs).forEach(function(k){
+    if (k === 'onclick') e.onclick = attrs[k];
+    else if (k === 'text') e.textContent = attrs[k];
+    else if (k === 'html') e.innerHTML = attrs[k];
+    else e.setAttribute(k, attrs[k]);
+  });
+  for (var i = 2; i < arguments.length; i++) { var c = arguments[i]; if (c) e.appendChild(c); }
+  return e;
+}
+function jsonBox(value, rows) {
+  return el('textarea', { rows: rows || 8, text: JSON.stringify(value, null, 2) });
+}
+function readJson(box) { try { return JSON.parse(box.value); } catch (e) { throw new Error('JSON không hợp lệ: ' + e.message); } }
+function main() { var m = document.getElementById('main'); m.innerHTML = ''; return m; }
+function err(e) { toast('❌ ' + (e && e.message || e)); }
+
+// ---------- sidebar / workspaces ----------
+function buildNav() {
+  var side = document.getElementById('side');
+  VIEWS.forEach(function(v){
+    var b = el('button', { text: LABELS[v], id: 'nav-' + v, onclick: function(){ go(v); } });
+    side.appendChild(b);
+  });
+}
+function go(view) {
+  S.view = view;
+  VIEWS.forEach(function(v){ document.getElementById('nav-' + v).classList.toggle('active', v === view); });
+  ({ agents: rAgents, chat: rChat, knowledge: rKnowledge, workflows: rWorkflows, plugins: rPlugins,
+     databases: rDatabases, prompts: rPrompts, keys: rKeys, usage: rUsage, search: rSearch, settings: rSettings })[view]();
+}
+function loadWorkspaces() {
+  return api('GET', '/workspaces').then(function(list){
+    var sel = document.getElementById('wsel'); sel.innerHTML = '';
+    list.forEach(function(w){ sel.appendChild(el('option', { value: w.id, text: w.name })); });
+    sel.appendChild(el('option', { value: '__new', text: '+ Tạo workspace...' }));
+    if (!S.wid && list.length) S.wid = list[0].id;
+    sel.value = S.wid;
+    localStorage.setItem('cz-wid', S.wid);
+    sel.onchange = function(){
+      if (sel.value === '__new') {
+        var name = prompt('Tên workspace:'); if (!name) { sel.value = S.wid; return; }
+        api('POST', '/workspaces', { name: name }).then(function(w){ S.wid = w.id; loadWorkspaces().then(function(){ go(S.view); }); }).catch(err);
+      } else { S.wid = sel.value; localStorage.setItem('cz-wid', S.wid); go(S.view); }
+    };
+  });
+}
+
+// ---------- agents ----------
+function rAgents() {
+  var m = main();
+  m.appendChild(el('h2', { text: 'Agents' }));
+  var bar = el('div', { class: 'row' });
+  var nameIn = el('input', { placeholder: 'Tên agent mới' });
+  bar.appendChild(nameIn);
+  bar.appendChild(el('button', { class: 'b primary', text: 'Tạo', onclick: function(){
+    if (!nameIn.value.trim()) return;
+    wapi('POST', '/agents', { name: nameIn.value.trim(), prompt: 'You are a helpful assistant.' })
+      .then(function(a){ editAgent(a.id); }).catch(err);
+  }}));
+  m.appendChild(bar);
+  var box = el('div'); m.appendChild(box);
+  wapi('GET', '/agents').then(function(list){
+    var t = el('table');
+    t.appendChild(el('tr', {}, el('th', { text: 'Tên' }), el('th', { text: 'Trạng thái' }), el('th', { text: 'Cập nhật' }), el('th')));
+    list.forEach(function(a){
+      var open = el('a', { class: 'link', text: 'Mở', onclick: function(){ editAgent(a.id); } });
+      t.appendChild(el('tr', {}, el('td', { text: a.name }), el('td', {}, el('span', { class: 'pill', text: a.status })),
+        el('td', { class: 'muted', text: (a.updated_at || '').slice(0, 16) }), el('td', {}, open)));
+    });
+    box.appendChild(t);
+  }).catch(err);
+}
+var EDITABLE_AGENT = ['name','description','prompt','model','welcome_message','suggested_questions','dataset_ids','plugin_tool_ids','workflow_ids','database_ids','shortcuts','variables'];
+function editAgent(id) {
+  var m = main();
+  wapi('GET', '/agents/' + id).then(function(a){
+    m.appendChild(el('h2', { text: 'Agent: ' + a.name }));
+    m.appendChild(el('div', { class: 'muted', text: 'id: ' + a.id + (a.share_token ? ' · share: ' + location.origin + '/share/' + a.share_token : '') }));
+    var subset = {}; EDITABLE_AGENT.forEach(function(k){ subset[k] = a[k]; });
+    var box = jsonBox(subset, 22);
+    m.appendChild(el('div', { class: 'card' }, box));
+    var bar = el('div', { class: 'row' });
+    bar.appendChild(el('button', { class: 'b primary', text: 'Lưu', onclick: function(){
+      try { wapi('PATCH', '/agents/' + id, readJson(box)).then(function(){ toast('✅ Đã lưu'); }).catch(err); } catch (e) { err(e); }
+    }}));
+    bar.appendChild(el('button', { class: 'b', text: 'Publish', onclick: function(){
+      wapi('POST', '/agents/' + id + '/publish').then(function(r){ toast('✅ Publish v' + r.version); }).catch(err);
+    }}));
+    bar.appendChild(el('button', { class: 'b', text: 'Share link', onclick: function(){
+      wapi('POST', '/agents/' + id + '/share').then(function(r){ prompt('Public chat URL:', r.url); editAgent(id); }).catch(err);
+    }}));
+    bar.appendChild(el('button', { class: 'b', text: 'Chat thử', onclick: function(){ go('chat'); setTimeout(function(){ var s = document.getElementById('chat-agent'); if (s) { s.value = id; } }, 300); } }));
+    bar.appendChild(el('button', { class: 'b', text: 'Xóa', onclick: function(){
+      if (confirm('Xóa agent này?')) wapi('DELETE', '/agents/' + id).then(rAgents).catch(err);
+    }}));
+    bar.appendChild(el('button', { class: 'b', text: '← Danh sách', onclick: rAgents }));
+    m.appendChild(bar);
+  }).catch(err);
+}
+
+// ---------- chat ----------
+var chatConv = null;
+function rChat() {
+  var m = main();
+  m.appendChild(el('h2', { text: 'Chat' }));
+  var sel = el('select', { id: 'chat-agent' });
+  var bar = el('div', { class: 'row' }, sel,
+    el('button', { class: 'b', text: 'Hội thoại mới', onclick: function(){ chatConv = null; document.getElementById('chatlog').innerHTML = ''; } }));
+  m.appendChild(bar);
+  m.appendChild(el('div', { id: 'chatlog' }));
+  var input = el('input', { placeholder: 'Tin nhắn... (Enter để gửi)', style: 'flex:1' });
+  m.appendChild(el('div', { class: 'row' }, input, el('button', { class: 'b primary', text: 'Gửi', onclick: send })));
+  wapi('GET', '/agents').then(function(list){
+    list.forEach(function(a){ sel.appendChild(el('option', { value: a.id, text: a.name })); });
+  }).catch(err);
+  input.addEventListener('keydown', function(e){ if (e.key === 'Enter') send(); });
+  function append(text, cls) {
+    var log = document.getElementById('chatlog');
+    var d = el('div', { text: text }); if (cls) d.className = cls;
+    log.appendChild(d); log.scrollTop = log.scrollHeight; return d;
+  }
+  function send() {
+    var message = input.value.trim(); if (!message || !sel.value) return;
+    input.value = '';
+    append('Bạn: ' + message, 'cu');
+    var reply = append('');
+    fetch('/v1/workspaces/' + S.wid + '/chat', {
+      method: 'POST',
+      headers: { 'authorization': 'Bearer ' + S.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ agent_id: sel.value, conversation_id: chatConv, message: message })
+    }).then(function(res){
+      if (!res.ok) { res.text().then(function(t){ reply.textContent = 'Lỗi: ' + t; }); return; }
+      var reader = res.body.getReader(); var dec = new TextDecoder(); var buf = ''; var event = '';
+      (function pump(){ reader.read().then(function(r){
+        if (r.done) return;
+        buf += dec.decode(r.value, { stream: true });
+        var nl;
+        while ((nl = buf.indexOf('\\n')) >= 0) {
+          var line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+          if (line.indexOf('event:') === 0) { event = line.slice(6).trim(); continue; }
+          if (line.indexOf('data:') !== 0) continue;
+          var data; try { data = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
+          if (event === 'start') chatConv = data.conversation_id;
+          else if (event === 'delta') reply.textContent += data.content;
+          else if (event === 'tool_call') append('[gọi tool: ' + data.name + ']', 'ct');
+          else if (event === 'error') append('[lỗi] ' + data.error, 'ct');
+        }
+        pump();
+      }); })();
+    });
+  }
+}
+
+// ---------- knowledge ----------
+function rKnowledge() {
+  var m = main();
+  m.appendChild(el('h2', { text: 'Knowledge (datasets)' }));
+  var nameIn = el('input', { placeholder: 'Tên dataset mới' });
+  m.appendChild(el('div', { class: 'row' }, nameIn, el('button', { class: 'b primary', text: 'Tạo', onclick: function(){
+    if (nameIn.value.trim()) wapi('POST', '/datasets', { name: nameIn.value.trim() }).then(rKnowledge).catch(err);
+  }})));
+  var box = el('div'); m.appendChild(box);
+  wapi('GET', '/datasets').then(function(list){
+    list.forEach(function(ds){
+      var card = el('div', { class: 'card' });
+      card.appendChild(el('div', { class: 'row' },
+        el('b', { text: ds.name }), el('span', { class: 'muted', text: ds.id }),
+        el('button', { class: 'b', text: 'Xóa', onclick: function(){ if (confirm('Xóa dataset?')) wapi('DELETE', '/datasets/' + ds.id).then(rKnowledge).catch(err); } })));
+      var file = el('input', { type: 'file' });
+      card.appendChild(el('div', { class: 'row' }, file,
+        el('button', { class: 'b', text: 'Upload & index', onclick: function(){
+          var f = file.files[0]; if (!f) return;
+          var rd = new FileReader();
+          rd.onload = function(){
+            var b64 = rd.result.split(',')[1];
+            wapi('POST', '/datasets/' + ds.id + '/documents', { name: f.name, content_base64: b64 })
+              .then(function(){ toast('✅ Đang index ' + f.name); setTimeout(function(){ listDocs(ds.id, docsBox); }, 1500); }).catch(err);
+          };
+          rd.readAsDataURL(f);
+        }})));
+      var q = el('input', { placeholder: 'Test tìm kiếm hybrid...' , style: 'flex:1' });
+      var res = el('div');
+      card.appendChild(el('div', { class: 'row' }, q, el('button', { class: 'b', text: 'Tìm', onclick: function(){
+        wapi('POST', '/datasets/' + ds.id + '/search', { query: q.value }).then(function(chunks){
+          res.innerHTML = '';
+          chunks.forEach(function(ch){ res.appendChild(el('div', { class: 'card', text: '[' + ch.score.toFixed(3) + '] ' + ch.content.slice(0, 300) })); });
+        }).catch(err);
+      }})));
+      card.appendChild(res);
+      var docsBox = el('div'); card.appendChild(docsBox);
+      listDocs(ds.id, docsBox);
+      box.appendChild(card);
+    });
+  }).catch(err);
+  function listDocs(dsid, docsBox) {
+    wapi('GET', '/datasets/' + dsid + '/documents').then(function(docs){
+      docsBox.innerHTML = '';
+      if (!docs.length) return;
+      var t = el('table');
+      t.appendChild(el('tr', {}, el('th', { text: 'Tài liệu' }), el('th', { text: 'Trạng thái' }), el('th', { text: 'Chunks' }), el('th')));
+      docs.forEach(function(d){
+        var acts = el('td', {},
+          el('a', { class: 'link', text: 'reindex', onclick: function(){ wapi('POST', '/datasets/' + dsid + '/documents/' + d.id + '/reindex').then(function(){ toast('✅ reindex'); }).catch(err); } }),
+          document.createTextNode(' '),
+          el('a', { class: 'link', text: 'xóa', onclick: function(){ wapi('DELETE', '/datasets/' + dsid + '/documents/' + d.id).then(function(){ listDocs(dsid, docsBox); }).catch(err); } }));
+        t.appendChild(el('tr', {}, el('td', { text: d.name }),
+          el('td', { text: d.status + (d.error ? ' — ' + d.error.slice(0, 80) : '') }),
+          el('td', { text: String(d.chunk_count) }), acts));
+      });
+      docsBox.appendChild(t);
+    }).catch(err);
+  }
+}
+
+// ---------- generic JSON-resource sections ----------
+function jsonSection(title, base, createBody, editableKeys, extraActions) {
+  return function() {
+    var m = main();
+    m.appendChild(el('h2', { text: title }));
+    var nameIn = el('input', { placeholder: 'Tên mới' });
+    m.appendChild(el('div', { class: 'row' }, nameIn, el('button', { class: 'b primary', text: 'Tạo', onclick: function(){
+      if (!nameIn.value.trim()) return;
+      wapi('POST', base, createBody(nameIn.value.trim())).then(function(x){ openItem(x.id); }).catch(err);
+    }})));
+    var box = el('div'); m.appendChild(box);
+    wapi('GET', base).then(function(list){
+      var t = el('table');
+      t.appendChild(el('tr', {}, el('th', { text: 'Tên' }), el('th', { text: 'Cập nhật' }), el('th')));
+      list.forEach(function(x){
+        t.appendChild(el('tr', {}, el('td', { text: x.name }), el('td', { class: 'muted', text: (x.updated_at || x.created_at || '').slice(0, 16) }),
+          el('td', {}, el('a', { class: 'link', text: 'Mở', onclick: function(){ openItem(x.id); } }))));
+      });
+      box.appendChild(t);
+    }).catch(err);
+    function openItem(id) {
+      var m2 = main();
+      wapi('GET', base + '/' + id).then(function(x){
+        m2.appendChild(el('h2', { text: title + ': ' + x.name }));
+        m2.appendChild(el('div', { class: 'muted', text: 'id: ' + x.id }));
+        var subset = {}; editableKeys.forEach(function(k){ subset[k] = x[k]; });
+        var boxEd = jsonBox(subset, 20);
+        m2.appendChild(el('div', { class: 'card' }, boxEd));
+        var bar = el('div', { class: 'row' });
+        bar.appendChild(el('button', { class: 'b primary', text: 'Lưu', onclick: function(){
+          try { wapi('PATCH', base + '/' + id, readJson(boxEd)).then(function(){ toast('✅ Đã lưu'); }).catch(err); } catch (e) { err(e); }
+        }}));
+        bar.appendChild(el('button', { class: 'b', text: 'Xóa', onclick: function(){
+          if (confirm('Xóa?')) wapi('DELETE', base + '/' + id).then(jsonSection(title, base, createBody, editableKeys, extraActions)).catch(err);
+        }}));
+        bar.appendChild(el('button', { class: 'b', text: '← Danh sách', onclick: jsonSection(title, base, createBody, editableKeys, extraActions) }));
+        m2.appendChild(bar);
+        if (extraActions) extraActions(m2, x);
+      }).catch(err);
+    }
+  };
+}
+
+var rWorkflows = jsonSection('Workflows', '/workflows',
+  function(name){ return { name: name, graph: { nodes: [ { id: 'start', type: 'start', data: { inputs: [] } }, { id: 'end', type: 'end', data: { template: '' } } ], edges: [ { source: 'start', target: 'end' } ] } }; },
+  ['name','description','status','graph'],
+  function(m, wf) {
+    var inBox = jsonBox({}, 4);
+    var out = el('div');
+    m.appendChild(el('div', { class: 'card' },
+      el('div', { text: 'Run với input:' }), inBox,
+      el('button', { class: 'b primary', text: '▶ Run', onclick: function(){
+        try {
+          wapi('POST', '/workflows/' + wf.id + '/run', { input: readJson(inBox) }).then(function(r){
+            out.innerHTML = ''; out.appendChild(jsonBox(r, 14));
+          }).catch(function(e){ out.innerHTML = ''; out.appendChild(el('div', { class: 'card', text: '❌ ' + e.message })); });
+        } catch (e) { err(e); }
+      }}), out));
+  });
+
+var rPrompts = jsonSection('Prompts', '/prompts',
+  function(name){ return { name: name, prompt: '' }; }, ['name','description','prompt']);
+
+function rPlugins() {
+  var m = main();
+  m.appendChild(el('h2', { text: 'Plugins (HTTP tools)' }));
+  var nameIn = el('input', { placeholder: 'Tên plugin' });
+  var urlIn = el('input', { placeholder: 'https://api.example.com' });
+  m.appendChild(el('div', { class: 'row' }, nameIn, urlIn, el('button', { class: 'b primary', text: 'Tạo', onclick: function(){
+    if (nameIn.value.trim() && urlIn.value.trim())
+      wapi('POST', '/plugins', { name: nameIn.value.trim(), base_url: urlIn.value.trim() }).then(rPlugins).catch(err);
+  }})));
+  var box = el('div'); m.appendChild(box);
+  wapi('GET', '/plugins').then(function(list){
+    list.forEach(function(p){
+      var card = el('div', { class: 'card' });
+      card.appendChild(el('div', { class: 'row' }, el('b', { text: p.name }), el('span', { class: 'muted', text: p.base_url }),
+        el('a', { class: 'link', text: 'sửa auth/config', onclick: function(){ editPlugin(p.id); } }),
+        el('a', { class: 'link', text: 'xóa', onclick: function(){ if (confirm('Xóa plugin?')) wapi('DELETE', '/plugins/' + p.id).then(rPlugins).catch(err); } })));
+      var toolsBox = el('div'); card.appendChild(toolsBox);
+      wapi('GET', '/plugins/' + p.id + '/tools').then(function(tools){
+        var t = el('table');
+        t.appendChild(el('tr', {}, el('th', { text: 'Tool' }), el('th', { text: 'Method' }), el('th', { text: 'Path' }), el('th')));
+        tools.forEach(function(tool){
+          t.appendChild(el('tr', {}, el('td', { text: tool.name }), el('td', { text: tool.method }), el('td', { text: tool.path }),
+            el('td', {}, el('a', { class: 'link', text: 'invoke thử', onclick: function(){
+              var args = prompt('args JSON:', '{}'); if (args === null) return;
+              wapi('POST', '/plugins/' + p.id + '/tools/' + tool.id + '/invoke', { args: JSON.parse(args) })
+                .then(function(r){ alert('HTTP ' + r.status + '\\n' + r.body.slice(0, 1500)); }).catch(err);
+            }}))));
+        });
+        toolsBox.appendChild(t);
+        toolsBox.appendChild(el('button', { class: 'b', text: '+ Tool', onclick: function(){
+          var spec = prompt('Tool JSON {name, method, path, description, parameters}:',
+            JSON.stringify({ name: 'get_thing', method: 'GET', path: '/things/{id}', description: '', parameters: [ { name: 'id', in: 'path', required: true } ] }));
+          if (spec) wapi('POST', '/plugins/' + p.id + '/tools', JSON.parse(spec)).then(rPlugins).catch(err);
+        }}));
+      }).catch(err);
+      box.appendChild(card);
+    });
+  }).catch(err);
+  function editPlugin(id) {
+    var m2 = main();
+    wapi('GET', '/plugins/' + id).then(function(p){
+      m2.appendChild(el('h2', { text: 'Plugin: ' + p.name }));
+      var subset = { name: p.name, description: p.description, base_url: p.base_url, auth: p.auth };
+      var boxEd = jsonBox(subset, 14);
+      m2.appendChild(el('div', { class: 'card' }, boxEd));
+      m2.appendChild(el('div', { class: 'muted', text: 'auth: {type:"none"} | {type:"api_key", in:"header|query", name, value} | {type:"oauth2", client_id, client_secret, auth_url, token_url, scopes}' }));
+      m2.appendChild(el('div', { class: 'row' },
+        el('button', { class: 'b primary', text: 'Lưu', onclick: function(){ try { wapi('PATCH', '/plugins/' + id, readJson(boxEd)).then(function(){ toast('✅'); }).catch(err); } catch (e) { err(e); } } }),
+        el('button', { class: 'b', text: 'OAuth connect (user hiện tại)', onclick: function(){
+          wapi('GET', '/plugins/' + id + '/oauth/url').then(function(r){ window.open(r.url, '_blank'); }).catch(err);
+        }}),
+        el('button', { class: 'b', text: '← Danh sách', onclick: rPlugins })));
+    }).catch(err);
+  }
+}
+
+function rDatabases() {
+  var m = main();
+  m.appendChild(el('h2', { text: 'Databases (memory)' }));
+  var nameIn = el('input', { placeholder: 'Tên database' });
+  m.appendChild(el('div', { class: 'row' }, nameIn, el('button', { class: 'b primary', text: 'Tạo', onclick: function(){
+    if (nameIn.value.trim())
+      wapi('POST', '/databases', { name: nameIn.value.trim(), columns: [ { name: 'title', type: 'text', required: true } ] }).then(rDatabases).catch(err);
+  }})));
+  var file = el('input', { type: 'file', accept: '.xlsx,.csv,.tsv' });
+  var impName = el('input', { placeholder: 'Tên DB import' });
+  m.appendChild(el('div', { class: 'row' }, impName, file, el('button', { class: 'b', text: 'Import xlsx/csv', onclick: function(){
+    var f = file.files[0]; if (!f || !impName.value.trim()) return;
+    var rd = new FileReader();
+    rd.onload = function(){
+      wapi('POST', '/databases/import', { name: impName.value.trim(), filename: f.name, content_base64: rd.result.split(',')[1] })
+        .then(function(r){ toast('✅ Import ' + r.inserted + ' rows (skip ' + r.skipped + ')'); rDatabases(); }).catch(err);
+    };
+    rd.readAsDataURL(f);
+  }})));
+  var box = el('div'); m.appendChild(box);
+  wapi('GET', '/databases').then(function(list){
+    list.forEach(function(db){
+      var card = el('div', { class: 'card' });
+      card.appendChild(el('div', { class: 'row' }, el('b', { text: db.name }),
+        el('span', { class: 'muted', text: (db.columns || []).map(function(c){ return c.name + ':' + c.type; }).join(', ') }),
+        el('a', { class: 'link', text: 'rows', onclick: function(){ viewRows(db); } }),
+        el('a', { class: 'link', text: 'sửa cột', onclick: function(){
+          var cols = prompt('columns JSON:', JSON.stringify(db.columns)); if (cols) wapi('PATCH', '/databases/' + db.id, { columns: JSON.parse(cols) }).then(rDatabases).catch(err);
+        }}),
+        el('a', { class: 'link', text: 'xóa', onclick: function(){ if (confirm('Xóa DB?')) wapi('DELETE', '/databases/' + db.id).then(rDatabases).catch(err); } })));
+      box.appendChild(card);
+    });
+  }).catch(err);
+  function viewRows(db) {
+    var m2 = main();
+    m2.appendChild(el('h2', { text: 'DB: ' + db.name }));
+    var addBox = jsonBox({}, 4);
+    m2.appendChild(el('div', { class: 'card' }, el('div', { text: 'Thêm row (JSON theo cột):' }), addBox,
+      el('button', { class: 'b primary', text: 'Thêm', onclick: function(){
+        try { wapi('POST', '/databases/' + db.id + '/rows', { data: readJson(addBox) }).then(function(){ viewRows(db); }).catch(err); } catch (e) { err(e); }
+      }})));
+    var listBox = el('div'); m2.appendChild(listBox);
+    m2.appendChild(el('button', { class: 'b', text: '← Danh sách', onclick: rDatabases }));
+    wapi('POST', '/databases/' + db.id + '/rows/query', { limit: 100 }).then(function(r){
+      var t = el('table');
+      var cols = (db.columns || []).map(function(c){ return c.name; });
+      var head = el('tr'); cols.forEach(function(cn){ head.appendChild(el('th', { text: cn })); }); head.appendChild(el('th'));
+      t.appendChild(head);
+      r.rows.forEach(function(row){
+        var tr = el('tr');
+        cols.forEach(function(cn){ tr.appendChild(el('td', { text: String(row.data[cn] == null ? '' : row.data[cn]) })); });
+        tr.appendChild(el('td', {}, el('a', { class: 'link', text: 'xóa', onclick: function(){
+          wapi('DELETE', '/databases/' + db.id + '/rows/' + row.id).then(function(){ viewRows(db); }).catch(err);
+        }})));
+        t.appendChild(tr);
+      });
+      listBox.appendChild(el('div', { class: 'muted', text: r.count + ' rows' }));
+      listBox.appendChild(t);
+    }).catch(err);
+  }
+}
+
+function rKeys() {
+  var m = main();
+  m.appendChild(el('h2', { text: 'API Keys' }));
+  var nameIn = el('input', { placeholder: 'Tên key' });
+  m.appendChild(el('div', { class: 'row' }, nameIn, el('button', { class: 'b primary', text: 'Tạo', onclick: function(){
+    if (!nameIn.value.trim()) return;
+    wapi('POST', '/api-keys', { name: nameIn.value.trim() }).then(function(k){
+      prompt('Key chỉ hiển thị MỘT lần — copy ngay:', k.key); rKeys();
+    }).catch(err);
+  }})));
+  var box = el('div'); m.appendChild(box);
+  wapi('GET', '/api-keys').then(function(list){
+    var t = el('table');
+    t.appendChild(el('tr', {}, el('th', { text: 'Tên' }), el('th', { text: 'Prefix' }), el('th', { text: 'Dùng lần cuối' }), el('th', { text: 'Trạng thái' }), el('th')));
+    list.forEach(function(k){
+      t.appendChild(el('tr', {}, el('td', { text: k.name }), el('td', { text: k.prefix + '…' }),
+        el('td', { class: 'muted', text: (k.last_used_at || '—').slice(0, 16) }),
+        el('td', { text: k.revoked_at ? 'revoked' : 'active' }),
+        el('td', {}, k.revoked_at ? null : el('a', { class: 'link', text: 'thu hồi', onclick: function(){ wapi('DELETE', '/api-keys/' + k.id).then(rKeys).catch(err); } }))));
+    });
+    box.appendChild(t);
+  }).catch(err);
+}
+
+function rUsage() {
+  var m = main();
+  m.appendChild(el('h2', { text: 'Usage (30 ngày)' }));
+  wapi('GET', '/usage').then(function(u){
+    var t = el('table');
+    t.appendChild(el('tr', {}, el('th', { text: 'Loại' }), el('th', { text: 'Model' }), el('th', { text: 'Prompt tokens' }), el('th', { text: 'Completion tokens' }), el('th', { text: 'Lượt' })));
+    u.totals.forEach(function(r){
+      t.appendChild(el('tr', {}, el('td', { text: r.kind }), el('td', { text: r.model }),
+        el('td', { text: String(r.prompt_tokens) }), el('td', { text: String(r.completion_tokens) }), el('td', { text: String(r.events) })));
+    });
+    m.appendChild(t);
+  }).catch(err);
+}
+
+function rSearch() {
+  var m = main();
+  m.appendChild(el('h2', { text: 'Tìm resource' }));
+  var q = el('input', { placeholder: 'Từ khóa...', style: 'flex:1' });
+  var box = el('div');
+  m.appendChild(el('div', { class: 'row' }, q, el('button', { class: 'b primary', text: 'Tìm', onclick: run })));
+  m.appendChild(box);
+  q.addEventListener('keydown', function(e){ if (e.key === 'Enter') run(); });
+  function run() {
+    wapi('GET', '/search?q=' + encodeURIComponent(q.value)).then(function(r){
+      box.innerHTML = '';
+      Object.keys(r).forEach(function(kind){
+        if (!r[kind].length) return;
+        box.appendChild(el('h2', { text: kind }));
+        r[kind].forEach(function(x){ box.appendChild(el('div', { class: 'card', text: x.name + (x.description ? ' — ' + x.description : '') })); });
+      });
+      if (!box.children.length) box.appendChild(el('div', { class: 'muted', text: 'Không có kết quả.' }));
+    }).catch(err);
+  }
+}
+
+function rSettings() {
+  var m = main();
+  m.appendChild(el('h2', { text: 'Settings' }));
+  var tok = el('textarea', { rows: 3, placeholder: 'Supabase access token hoặc czk_ API key', text: S.token });
+  m.appendChild(el('div', { class: 'card' }, el('div', { text: 'Bearer token:' }), tok,
+    el('button', { class: 'b primary', text: 'Lưu token', onclick: function(){
+      S.token = tok.value.trim(); localStorage.setItem('cz-token', S.token);
+      loadWorkspaces().then(function(){ toast('✅ Token OK'); go('agents'); }).catch(err);
+    }})));
+  var su = el('input', { placeholder: 'https://xxxx.supabase.co', style: 'width:100%' });
+  var sk = el('input', { placeholder: 'anon key', style: 'width:100%' });
+  var em = el('input', { placeholder: 'email' });
+  var pw = el('input', { placeholder: 'password', type: 'password' });
+  m.appendChild(el('div', { class: 'card' },
+    el('div', { text: 'Hoặc đăng nhập qua Supabase Auth (email/password):' }), su, sk,
+    el('div', { class: 'row' }, em, pw,
+      el('button', { class: 'b', text: 'Đăng nhập', onclick: function(){
+        fetch(su.value.replace(/\\/+$/, '') + '/auth/v1/token?grant_type=password', {
+          method: 'POST', headers: { 'content-type': 'application/json', apikey: sk.value },
+          body: JSON.stringify({ email: em.value, password: pw.value })
+        }).then(function(r){ return r.json(); }).then(function(j){
+          if (!j.access_token) throw new Error(j.error_description || j.msg || 'login failed');
+          S.token = j.access_token; localStorage.setItem('cz-token', S.token);
+          loadWorkspaces().then(function(){ toast('✅ Đã đăng nhập'); go('agents'); });
+        }).catch(err);
+      }}))));
+}
+
+buildNav();
+if (S.token) { loadWorkspaces().then(function(){ go('agents'); }).catch(function(){ go('settings'); }); }
+else go('settings');
+</script>
+</body>
+</html>`

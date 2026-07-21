@@ -124,6 +124,33 @@ agents.post('/:id/publish', async (c) => {
   return c.json({ ok: true, version })
 })
 
+// Publish the agent to a public hosted chat page at /share/<token>.
+agents.post('/:id/share', async (c) => {
+  const token = crypto.randomUUID()
+  const { data, error } = await c
+    .get('supabase')
+    .from('agents')
+    .update({ share_token: token })
+    .eq('id', c.req.param('id')!)
+    .eq('workspace_id', c.req.param('wid')!)
+    .select('id')
+    .maybeSingle()
+  if (error) return c.json({ error: error.message }, 400)
+  if (!data) return c.json({ error: 'agent not found' }, 404)
+  return c.json({ share_token: token, url: `${new URL(c.req.url).origin}/share/${token}` })
+})
+
+agents.delete('/:id/share', async (c) => {
+  const { error } = await c
+    .get('supabase')
+    .from('agents')
+    .update({ share_token: null })
+    .eq('id', c.req.param('id')!)
+    .eq('workspace_id', c.req.param('wid')!)
+  if (error) return c.json({ error: error.message }, 400)
+  return c.json({ ok: true })
+})
+
 agents.get('/:id/releases', async (c) => {
   const { data } = await c
     .get('supabase')
