@@ -121,7 +121,10 @@ knowledge.post('/:dsid/documents', async (c) => {
 
   const { error: uploadError } = await supabase.storage
     .from('knowledge')
-    .upload(storagePath, bytes, { contentType: 'text/plain; charset=utf-8', upsert: true })
+    .upload(storagePath, bytes, {
+      contentType: body.content_base64 ? 'application/octet-stream' : 'text/plain; charset=utf-8',
+      upsert: true,
+    })
   if (uploadError) return c.json({ error: `upload failed: ${uploadError.message}` }, 500)
 
   const { data: doc, error } = await supabase

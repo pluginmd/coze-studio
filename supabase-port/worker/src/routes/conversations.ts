@@ -37,6 +37,21 @@ conversations.get('/:id/messages', async (c) => {
   return c.json(data ?? [])
 })
 
+// Clear history but keep the conversation (workflow/agent "clear context").
+conversations.post('/:id/clear', async (c) => {
+  const supabase = c.get('supabase')
+  const { data: conv } = await supabase
+    .from('conversations')
+    .select('id')
+    .eq('id', c.req.param('id')!)
+    .eq('workspace_id', c.req.param('wid')!)
+    .maybeSingle()
+  if (!conv) return c.json({ error: 'conversation not found' }, 404)
+  const { error } = await supabase.from('messages').delete().eq('conversation_id', conv.id)
+  if (error) return c.json({ error: error.message }, 400)
+  return c.json({ ok: true })
+})
+
 conversations.delete('/:id', async (c) => {
   const { error } = await c
     .get('supabase')

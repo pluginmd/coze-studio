@@ -13,6 +13,8 @@ const AGENT_FIELDS = [
   'dataset_ids',
   'plugin_tool_ids',
   'workflow_ids',
+  'database_ids',
+  'shortcuts',
   'variables',
 ]
 

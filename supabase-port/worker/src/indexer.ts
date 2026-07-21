@@ -1,6 +1,7 @@
 import type { Env } from './env'
 import { adminClient } from './lib/supabase'
-import { chunkText, extractText } from './lib/chunking'
+import { chunkText } from './lib/chunking'
+import { parseDocument } from './lib/docparse'
 import { embedTexts } from './lib/jina'
 
 // Document ingestion pipeline: Storage download -> extract -> chunk ->
@@ -24,7 +25,7 @@ export async function indexDocument(env: Env, documentId: string): Promise<void>
       .download(doc.storage_path)
     if (dlError || !blob) throw new Error(`storage download failed: ${dlError?.message ?? 'no data'}`)
 
-    const text = extractText(await blob.text(), doc.name)
+    const text = await parseDocument(new Uint8Array(await blob.arrayBuffer()), doc.name)
     const { data: dataset } = await supabase
       .from('datasets')
       .select('chunk_size, chunk_overlap')

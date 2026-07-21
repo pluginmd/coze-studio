@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../env'
 import { pick } from '../lib/util'
 import { invokeTool, type PluginRow, type ToolRow } from '../lib/plugins'
+import { isOAuthConfig, getAccessToken } from '../lib/oauth'
 
 const PLUGIN_FIELDS = ['name', 'description', 'base_url', 'auth']
 const TOOL_FIELDS = ['name', 'description', 'method', 'path', 'parameters']
@@ -151,9 +152,27 @@ plugins.post('/:pid/tools/:tid/invoke', async (c) => {
     .eq('id', tool.plugin_id)
     .maybeSingle()
   if (!plugin) return c.json({ error: 'plugin not found' }, 404)
-  const body = await c.req.json<{ args?: Record<string, unknown> }>().catch(() => ({}) as any)
+  const body = await c.req
+    .json<{ args?: Record<string, unknown>; user_key?: string }>()
+    .catch(() => ({}) as any)
+  let extraHeaders: Record<string, string> | undefined
+  if (isOAuthConfig(plugin.auth)) {
+    const userKey =
+      c.get('authKind') === 'user' ? c.get('userId') : (body.user_key ?? 'api')
+    const token = await getAccessToken(supabase, plugin.id, wid, userKey, plugin.auth)
+    if (!token) {
+      return c.json(
+        {
+          error: 'oauth connection required for this user',
+          connect_url: `/v1/workspaces/${wid}/plugins/${plugin.id}/oauth/url`,
+        },
+        400
+      )
+    }
+    extraHeaders = { authorization: `Bearer ${token}` }
+  }
   try {
-    const result = await invokeTool(plugin as PluginRow, tool as ToolRow, body.args ?? {})
+    const result = await invokeTool(plugin as PluginRow, tool as ToolRow, body.args ?? {}, extraHeaders)
     return c.json(result)
   } catch (e) {
     return c.json({ error: String(e).slice(0, 500) }, 502)

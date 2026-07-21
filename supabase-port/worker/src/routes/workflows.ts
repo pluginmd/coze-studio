@@ -96,8 +96,9 @@ workflows.post('/:id/run', async (c) => {
     .single()
   if (runError) return c.json({ error: runError.message }, 500)
 
+  const userKey = c.get('authKind') === 'user' ? c.get('userId') : 'api'
   try {
-    const result = await runWorkflow(c.env, supabase, wid, wf.graph as WfGraph, input)
+    const result = await runWorkflow(c.env, supabase, wid, wf.graph as WfGraph, input, { userKey })
     await supabase
       .from('workflow_runs')
       .update({
@@ -107,17 +108,34 @@ workflows.post('/:id/run', async (c) => {
         finished_at: new Date().toISOString(),
       })
       .eq('id', run.id)
+    if (result.usage.prompt_tokens || result.usage.completion_tokens) {
+      await supabase.from('usage_events').insert({
+        workspace_id: wid,
+        kind: 'workflow',
+        model: c.env.CHAT_MODEL ?? 'gpt-4o-mini',
+        prompt_tokens: result.usage.prompt_tokens,
+        completion_tokens: result.usage.completion_tokens,
+        meta: { workflow_id: wf.id, run_id: run.id },
+      })
+    }
     return c.json({
       run_id: run.id,
       status: 'succeeded',
       output: result.output,
       node_results: result.nodeResults,
+      usage: result.usage,
     })
   } catch (e) {
-    const message = String(e).slice(0, 2000)
+    const message = String(e instanceof Error ? e.message : e).slice(0, 2000)
+    const nodeResults = (e as { nodeResults?: Record<string, unknown> }).nodeResults ?? null
     await supabase
       .from('workflow_runs')
-      .update({ status: 'failed', error: message, finished_at: new Date().toISOString() })
+      .update({
+        status: 'failed',
+        error: message,
+        node_results: nodeResults,
+        finished_at: new Date().toISOString(),
+      })
       .eq('id', run.id)
     return c.json({ run_id: run.id, status: 'failed', error: message }, 500)
   }

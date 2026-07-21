@@ -1,13 +1,19 @@
 import type { Env } from '../env'
-import { chatComplete, chatStream, type ChatMessage, type ChatResult, type Usage } from './openai'
-import { invokeTool, type ToolBinding } from './plugins'
+import { chatComplete, chatStream, type ChatResult, type Usage, type ChatMessage, type ToolDef } from './openai'
+
+// A tool an agent can call: OpenAI function definition + an executor.
+// Built from HTTP plugin tools, agent databases, and workflows alike.
+export interface AgentTool {
+  def: ToolDef
+  execute: (args: Record<string, unknown>) => Promise<string>
+}
 
 export interface AgentLoopOptions {
   model?: string
   temperature?: number
   maxTokens?: number
   messages: ChatMessage[]
-  tools: ToolBinding[]
+  tools: AgentTool[]
   maxRounds?: number
 }
 
@@ -25,8 +31,7 @@ export interface AgentLoopResult {
 
 export type EmitFn = (event: Record<string, unknown>) => Promise<void>
 
-// The core "agent runtime": chat completion with an HTTP-tool execution loop.
-// This replaces the Go single-agent domain + plugin execution pipeline.
+// The core agent runtime: chat completion with a tool execution loop.
 export async function runAgentLoop(
   env: Env,
   opts: AgentLoopOptions,
@@ -73,8 +78,7 @@ export async function runAgentLoop(
 
     messages.push(result.message)
     for (const call of toolCalls) {
-      let output: string
-      const binding = toolsByName.get(call.function.name)
+      const tool = toolsByName.get(call.function.name)
       let args: Record<string, unknown> = {}
       try {
         args = JSON.parse(call.function.arguments || '{}')
@@ -82,11 +86,12 @@ export async function runAgentLoop(
         // model produced malformed JSON — invoke with no args
       }
       if (emit) await emit({ type: 'tool_call', name: call.function.name, args })
-      if (!binding) {
+      let output: string
+      if (!tool) {
         output = JSON.stringify({ error: `unknown tool: ${call.function.name}` })
       } else {
         try {
-          output = JSON.stringify(await invokeTool(binding.plugin, binding.tool, args))
+          output = await tool.execute(args)
         } catch (e) {
           output = JSON.stringify({ error: String(e).slice(0, 500) })
         }
@@ -94,7 +99,11 @@ export async function runAgentLoop(
       if (emit) {
         await emit({ type: 'tool_result', name: call.function.name, output: output.slice(0, 2000) })
       }
-      toolLog.push({ name: call.function.name, arguments: call.function.arguments, output: output.slice(0, 8000) })
+      toolLog.push({
+        name: call.function.name,
+        arguments: call.function.arguments,
+        output: output.slice(0, 8000),
+      })
       messages.push({ role: 'tool', content: output, tool_call_id: call.id })
     }
   }

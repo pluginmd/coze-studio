@@ -1,10 +1,9 @@
-import type { ToolDef } from './openai'
-
 export interface PluginAuth {
-  type: 'none' | 'api_key'
+  type: 'none' | 'api_key' | 'oauth2'
   in?: 'header' | 'query'
   name?: string
   value?: string
+  [key: string]: unknown
 }
 
 export interface PluginRow {
@@ -32,58 +31,6 @@ export interface ToolRow {
   parameters: ToolParameter[] | null
 }
 
-export interface ToolBinding {
-  def: ToolDef
-  plugin: PluginRow
-  tool: ToolRow
-}
-
-function sanitizeName(name: string): string {
-  const cleaned = name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48)
-  return cleaned || 'tool'
-}
-
-// Builds OpenAI function definitions from stored HTTP tools; names are
-// sanitized and de-duplicated so the model can address each one uniquely.
-export function buildToolBindings(
-  tools: ToolRow[],
-  pluginsById: Map<string, PluginRow>
-): ToolBinding[] {
-  const used = new Set<string>()
-  const bindings: ToolBinding[] = []
-  for (const tool of tools) {
-    const plugin = pluginsById.get(tool.plugin_id)
-    if (!plugin) continue
-    let name = sanitizeName(tool.name)
-    while (used.has(name)) name = `${name.slice(0, 40)}_${tool.id.slice(0, 6)}`
-    used.add(name)
-
-    const properties: Record<string, unknown> = {}
-    const required: string[] = []
-    for (const p of tool.parameters ?? []) {
-      properties[p.name] = {
-        ...(p.schema ?? { type: 'string' }),
-        ...(p.description ? { description: p.description } : {}),
-      }
-      if (p.required) required.push(p.name)
-    }
-
-    bindings.push({
-      plugin,
-      tool,
-      def: {
-        type: 'function',
-        function: {
-          name,
-          description: tool.description || `${tool.method} ${tool.path} on ${plugin.name}`,
-          parameters: { type: 'object', properties, ...(required.length ? { required } : {}) },
-        },
-      },
-    })
-  }
-  return bindings
-}
-
 export interface ToolInvokeResult {
   status: number
   body: string
@@ -92,7 +39,8 @@ export interface ToolInvokeResult {
 export async function invokeTool(
   plugin: PluginRow,
   tool: ToolRow,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  extraHeaders?: Record<string, string>
 ): Promise<ToolInvokeResult> {
   let path = tool.path.startsWith('/') ? tool.path : `/${tool.path}`
   const query = new URLSearchParams()
@@ -113,7 +61,7 @@ export async function invokeTool(
   const url = new URL(plugin.base_url.replace(/\/+$/, '') + path)
   query.forEach((v, k) => url.searchParams.set(k, v))
 
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  const headers: Record<string, string> = { 'content-type': 'application/json', ...extraHeaders }
   const auth = plugin.auth ?? { type: 'none' }
   if (auth.type === 'api_key' && auth.name && auth.value) {
     if (auth.in === 'query') url.searchParams.set(auth.name, auth.value)

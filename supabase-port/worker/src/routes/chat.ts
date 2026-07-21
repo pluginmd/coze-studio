@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { AppEnv } from '../env'
 import { runAgentLoop, type ToolLogEntry } from '../lib/agentloop'
-import { buildToolBindings, type PluginRow, type ToolBinding, type ToolRow } from '../lib/plugins'
+import { buildAgentTools } from '../lib/agenttools'
 import { retrieve, contextBlock } from '../lib/retrieval'
 import { renderTemplate } from '../engine/workflow'
 import type { ChatMessage, Usage } from '../lib/openai'
@@ -12,6 +12,7 @@ interface ChatBody {
   conversation_id?: string
   message?: string
   stream?: boolean
+  user_key?: string // end-user identity for API-key callers (memory/oauth scoping)
 }
 
 export const chat = new Hono<AppEnv>()
@@ -34,6 +35,9 @@ chat.post('/', async (c) => {
     .eq('workspace_id', wid)
     .maybeSingle()
   if (!agent) return c.json({ error: 'agent not found' }, 404)
+
+  const userKey =
+    c.get('authKind') === 'user' ? c.get('userId') : (body.user_key ?? 'api')
 
   let conversationId = body.conversation_id
   if (conversationId) {
@@ -82,31 +86,22 @@ chat.post('/', async (c) => {
     ? await retrieve(c.env, supabase, wid, datasetIds, userMessage).catch(() => [])
     : []
 
-  let bindings: ToolBinding[] = []
-  const toolIds: string[] = agent.plugin_tool_ids ?? []
-  if (toolIds.length) {
-    const { data: tools } = await supabase
-      .from('plugin_tools')
-      .select()
-      .in('id', toolIds)
-      .eq('workspace_id', wid)
-    const pluginIds = [...new Set((tools ?? []).map((t: any) => t.plugin_id as string))]
-    let pluginRows: PluginRow[] = []
-    if (pluginIds.length) {
-      const { data: plugins } = await supabase
-        .from('plugins')
-        .select()
-        .in('id', pluginIds)
-        .eq('workspace_id', wid)
-      pluginRows = (plugins ?? []) as PluginRow[]
-    }
-    bindings = buildToolBindings(
-      (tools ?? []) as ToolRow[],
-      new Map(pluginRows.map((p) => [p.id, p]))
-    )
-  }
+  // Tools: HTTP plugins (+OAuth), agent databases, workflows-as-tools.
+  const tools = await buildAgentTools(c.env, supabase, wid, userKey, agent)
 
-  const systemPrompt = renderTemplate(agent.prompt ?? '', { var: agent.variables ?? {} })
+  // Prompt variables: agent statics overridden by the user's long-term memory.
+  const { data: varRows } = await supabase
+    .from('user_variables')
+    .select('name, value, agent_id')
+    .eq('workspace_id', wid)
+    .eq('user_key', userKey)
+    .or(`agent_id.eq.${agent.id},agent_id.is.null`)
+    .limit(100)
+  const userVars: Record<string, unknown> = {}
+  for (const v of varRows ?? []) userVars[v.name] = v.value
+  const promptScope = { var: { ...(agent.variables ?? {}), ...userVars } }
+  const systemPrompt = renderTemplate(agent.prompt ?? '', promptScope)
+
   const messages: ChatMessage[] = [
     ...(systemPrompt.trim() ? [{ role: 'system' as const, content: systemPrompt }] : []),
     ...(chunks.length ? [{ role: 'system' as const, content: contextBlock(chunks) }] : []),
@@ -120,7 +115,7 @@ chat.post('/', async (c) => {
     temperature: modelConfig.temperature,
     maxTokens: modelConfig.max_tokens,
     messages,
-    tools: bindings,
+    tools,
   }
 
   const persist = async (content: string, toolLog: ToolLogEntry[], usage: Usage) => {
