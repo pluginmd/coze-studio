@@ -40,6 +40,21 @@ export interface WfRunResult {
   usage: Usage
 }
 
+export type WfEmit = (event: Record<string, unknown>) => Promise<void>
+
+// Thrown when a question/input node needs user interaction; the run is
+// persisted as 'suspended' and later resumed with the user's answer.
+export class SuspendError extends Error {
+  constructor(
+    public nodeId: string,
+    public question: string,
+    public options: string[] | null,
+    public results: Record<string, unknown>
+  ) {
+    super(`workflow suspended at node ${nodeId}`)
+  }
+}
+
 interface EngineCtx {
   env: Env
   supabase: SupabaseClient
@@ -48,12 +63,18 @@ interface EngineCtx {
   usage: Usage
   executed: { count: number }
   depth: number
+  emit?: WfEmit
+  resume?: { nodeId: string; value: unknown } | null
 }
 
 const NODE_ALIASES: Record<string, string> = {
   knowledge: 'knowledge_retrieve',
   entry: 'start',
   exit: 'end',
+  output: 'output_emitter',
+  question_answer: 'question',
+  input_receiver: 'input',
+  assign: 'variable_assign',
 }
 
 const MAX_NODES_PER_RUN = 500
@@ -125,13 +146,23 @@ function evalCondition(
 // ---------------------------------------------------------------------------
 // public entry
 // ---------------------------------------------------------------------------
+export interface RunOptions {
+  userKey?: string
+  depth?: number
+  emit?: WfEmit
+  // resume support: previously-computed node results + the answer for the
+  // suspended node
+  preset?: Record<string, unknown>
+  resume?: { nodeId: string; value: unknown }
+}
+
 export async function runWorkflow(
   env: Env,
   supabase: SupabaseClient,
   workspaceId: string,
   graph: WfGraph,
   input: Record<string, unknown>,
-  opts: { userKey?: string; depth?: number } = {}
+  opts: RunOptions = {}
 ): Promise<WfRunResult> {
   const ctx: EngineCtx = {
     env,
@@ -141,8 +172,10 @@ export async function runWorkflow(
     usage: { prompt_tokens: 0, completion_tokens: 0 },
     executed: { count: 0 },
     depth: opts.depth ?? 0,
+    emit: opts.emit,
+    resume: opts.resume ?? null,
   }
-  const { output, nodeResults } = await execGraph(ctx, graph, input)
+  const { output, nodeResults } = await execGraph(ctx, graph, input, opts.preset)
   return { output, nodeResults, usage: ctx.usage }
 }
 
@@ -162,10 +195,90 @@ async function runSubWorkflow(
   return execGraph({ ...ctx, depth: ctx.depth + 1 }, wf.graph as WfGraph, input)
 }
 
+function resolveOutboundEdges(
+  type: string,
+  result: unknown,
+  outs: WfEdge[],
+  edgeState: Map<WfEdge, 'unresolved' | 'active' | 'inactive'>,
+  errored = false
+): void {
+  if (errored) {
+    // error-branch strategy: only edges labeled 'error' fire
+    for (const e of outs) edgeState.set(e, e.label === 'error' ? 'active' : 'inactive')
+    return
+  }
+  if (type === 'condition') {
+    const branch = String((result as any).result)
+    for (const e of outs) {
+      if (e.label === 'error') edgeState.set(e, 'inactive')
+      else edgeState.set(e, (e.label ?? 'true') === branch ? 'active' : 'inactive')
+    }
+  } else if (type === 'selector' || type === 'intent') {
+    const branch = String((result as any).branch ?? (result as any).intent ?? '')
+    const matched = outs.some((e) => e.label === branch)
+    for (const e of outs) {
+      const active = matched ? e.label === branch : e.label === 'default'
+      edgeState.set(e, active ? 'active' : 'inactive')
+    }
+  } else {
+    for (const e of outs) edgeState.set(e, e.label === 'error' ? 'inactive' : 'active')
+  }
+}
+
+interface OnError {
+  strategy?: 'throw' | 'default' | 'branch'
+  default?: unknown
+  retry?: number
+  timeout_ms?: number
+}
+
+async function execWithPolicy(
+  ctx: EngineCtx,
+  type: string,
+  node: WfNode,
+  input: Record<string, unknown>,
+  results: Record<string, unknown>
+): Promise<{ result: unknown; errored: boolean }> {
+  const onError = ((node.data ?? {}).on_error ?? {}) as OnError
+  const attempts = 1 + Math.min(Math.max(0, Number(onError.retry ?? 0)), 5)
+  const timeoutMs = onError.timeout_ms ? Number(onError.timeout_ms) : null
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const exec = execNode(ctx, type, node, input, results)
+      const result = timeoutMs
+        ? await Promise.race([
+            exec,
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error(`node timed out after ${timeoutMs}ms`)), timeoutMs)
+            ),
+          ])
+        : await exec
+      return { result, errored: false }
+    } catch (e) {
+      if (e instanceof SuspendError) throw e // interaction, not failure
+      lastError = e
+    }
+  }
+
+  const message = String(lastError instanceof Error ? lastError.message : lastError).slice(0, 500)
+  if (onError.strategy === 'default') {
+    return { result: onError.default ?? { error: message }, errored: false }
+  }
+  if (onError.strategy === 'branch') {
+    return { result: { error: message }, errored: true }
+  }
+  const err = new Error(`node ${node.id} (${type}) failed: ${message}`)
+  ;(err as any).nodeResults = results
+  throw err
+}
+
 async function execGraph(
   ctx: EngineCtx,
   graph: WfGraph,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  preset?: Record<string, unknown>
 ): Promise<{ output: unknown; nodeResults: Record<string, unknown> }> {
   const nodes = graph.nodes ?? []
   const edges = graph.edges ?? []
@@ -192,6 +305,21 @@ async function execGraph(
   const results: Record<string, unknown> = { input }
   let output: unknown = null
 
+  // Resume seeding: mark previously-completed nodes done and re-resolve
+  // their outbound edges so execution continues exactly where it stopped.
+  if (preset) {
+    for (const [nodeId, result] of Object.entries(preset)) {
+      if (nodeId === 'input') continue
+      const node = nodesById.get(nodeId)
+      if (!node) continue
+      results[nodeId] = result
+      status.set(node.id, 'done')
+      const type = NODE_ALIASES[node.type] ?? node.type
+      resolveOutboundEdges(type, result, outbound.get(node.id) ?? [], edgeState)
+      if (type === 'end' && output == null) output = result
+    }
+  }
+
   const isResolvable = (n: WfNode) =>
     (inbound.get(n.id) ?? []).every((e) => edgeState.get(e) !== 'unresolved')
   const hasActiveInput = (n: WfNode) => {
@@ -217,31 +345,32 @@ async function execGraph(
           throw new Error(`workflow exceeded ${MAX_NODES_PER_RUN} node executions`)
         }
         const type = NODE_ALIASES[node.type] ?? node.type
-        let result: unknown
-        try {
-          result = await execNode(ctx, type, node, input, results)
-        } catch (e) {
-          const err = new Error(`node ${node.id} (${type}) failed: ${String(e).slice(0, 500)}`)
-          ;(err as any).nodeResults = results
-          throw err
-        }
-        results[node.id] = result
-        status.set(node.id, 'done')
+        if (ctx.emit) await ctx.emit({ type: 'node_start', node_id: node.id, node_type: type })
 
-        if (type === 'condition') {
-          const branch = String((result as any).result)
-          for (const e of outs) edgeState.set(e, (e.label ?? 'true') === branch ? 'active' : 'inactive')
-        } else if (type === 'selector' || type === 'intent') {
-          const branch = String((result as any).branch ?? (result as any).intent ?? '')
-          const matched = outs.some((e) => e.label === branch)
-          for (const e of outs) {
-            const active = matched ? e.label === branch : e.label === 'default'
-            edgeState.set(e, active ? 'active' : 'inactive')
+        let outcome: { result: unknown; errored: boolean }
+        try {
+          outcome = await execWithPolicy(ctx, type, node, input, results)
+        } catch (e) {
+          if (e instanceof SuspendError) {
+            // attach everything computed so far so the run can resume
+            e.results = { ...results }
+            delete e.results['input']
           }
-        } else {
-          for (const e of outs) edgeState.set(e, 'active')
+          throw e
         }
-        if (type === 'end' && output == null) output = result
+        results[node.id] = outcome.result
+        status.set(node.id, 'done')
+        if (ctx.emit) {
+          await ctx.emit({
+            type: 'node_finish',
+            node_id: node.id,
+            node_type: type,
+            errored: outcome.errored,
+            result: JSON.stringify(outcome.result ?? null).slice(0, 500),
+          })
+        }
+        resolveOutboundEdges(type, outcome.result, outs, edgeState, outcome.errored)
+        if (type === 'end' && output == null) output = outcome.result
       })
     )
   }
@@ -527,6 +656,12 @@ async function execNode(
       for (let i = 0; i < items.length; i++) {
         const run = await runSubWorkflow(ctx, String(data.workflow_id), { item: items[i], index: i })
         outputs.push(run.output)
+        // break_if: early loop termination (Break node of the original)
+        if (data.break_if) {
+          const b = data.break_if as { left?: unknown; op?: string; right?: unknown }
+          const local = { item: items[i], index: i, output: run.output } as Record<string, unknown>
+          if (evalCondition(local, b.left, String(b.op ?? 'eq'), b.right)) break
+        }
       }
       return { results: outputs, count: outputs.length }
     }
@@ -611,6 +746,137 @@ async function execNode(
         nodes: scope,
       }
       return { value: evalExpression(String(data.expression ?? ''), vars) }
+    }
+
+    // Ask the user mid-run; the run suspends until resumed with an answer.
+    case 'question': {
+      if (ctx.resume?.nodeId === node.id) {
+        const value = ctx.resume.value
+        ctx.resume = null
+        return { answer: value }
+      }
+      throw new SuspendError(
+        node.id,
+        renderTemplate(String(data.question ?? ''), scope),
+        Array.isArray(data.options) ? (data.options as string[]).map(String) : null,
+        {}
+      )
+    }
+
+    // Receive arbitrary user input mid-run (InputReceiver of the original).
+    case 'input': {
+      if (ctx.resume?.nodeId === node.id) {
+        const value = ctx.resume.value
+        ctx.resume = null
+        return { value }
+      }
+      throw new SuspendError(
+        node.id,
+        renderTemplate(String(data.prompt ?? 'Input required'), scope),
+        null,
+        {}
+      )
+    }
+
+    // Write a long-term user/app variable (VariableAssigner of the original).
+    case 'variable_assign': {
+      const name = renderTemplate(String(data.name ?? ''), scope)
+      if (!name) throw new Error('variable_assign requires a name')
+      const value = renderDeep(data.value, scope)
+      const { error } = await ctx.supabase.from('user_variables').upsert(
+        {
+          workspace_id: ctx.workspaceId,
+          agent_id: data.agent_id ?? null,
+          user_key: renderTemplate(String(data.user_key ?? ''), scope) || ctx.userKey || 'api',
+          name,
+          value: value ?? null,
+        },
+        { onConflict: 'workspace_id,agent_id,user_key,name' }
+      )
+      if (error) throw new Error(error.message)
+      return { ok: true, name, value }
+    }
+
+    // Emit an intermediate streaming message (OutputEmitter of the original).
+    case 'output_emitter': {
+      const content = renderTemplate(String(data.template ?? ''), scope)
+      if (ctx.emit) await ctx.emit({ type: 'message', node_id: node.id, content })
+      return { text: content }
+    }
+
+    case 'conversation_update': {
+      const conversationId = renderTemplate(String(data.conversation_id ?? ''), scope)
+      const { data: updated, error } = await ctx.supabase
+        .from('conversations')
+        .update({ title: renderTemplate(String(data.title ?? ''), scope).slice(0, 80) })
+        .eq('id', conversationId)
+        .eq('workspace_id', ctx.workspaceId)
+        .select('id')
+        .maybeSingle()
+      if (error) throw new Error(error.message)
+      return { ok: !!updated }
+    }
+
+    case 'conversation_delete': {
+      const conversationId = renderTemplate(String(data.conversation_id ?? ''), scope)
+      const { error } = await ctx.supabase
+        .from('conversations')
+        .delete()
+        .eq('id', conversationId)
+        .eq('workspace_id', ctx.workspaceId)
+      if (error) throw new Error(error.message)
+      return { ok: true }
+    }
+
+    case 'conversation_list': {
+      const agentId = renderTemplate(String(data.agent_id ?? ''), scope)
+      let query = ctx.supabase
+        .from('conversations')
+        .select('id, title, created_at, updated_at')
+        .eq('workspace_id', ctx.workspaceId)
+        .order('updated_at', { ascending: false })
+        .limit(Math.min(Number(data.limit ?? 20), 100))
+      if (agentId) query = query.eq('agent_id', agentId)
+      const { data: rows } = await query
+      return { conversations: rows ?? [], count: rows?.length ?? 0 }
+    }
+
+    case 'conversation_clear': {
+      const conversationId = renderTemplate(String(data.conversation_id ?? ''), scope)
+      const { data: conv } = await ctx.supabase
+        .from('conversations')
+        .select('id')
+        .eq('id', conversationId)
+        .eq('workspace_id', ctx.workspaceId)
+        .maybeSingle()
+      if (!conv) throw new Error(`conversation not found: ${conversationId}`)
+      const { error } = await ctx.supabase.from('messages').delete().eq('conversation_id', conv.id)
+      if (error) throw new Error(error.message)
+      return { ok: true }
+    }
+
+    case 'message_edit': {
+      const messageId = renderTemplate(String(data.message_id ?? ''), scope)
+      const { data: updated, error } = await ctx.supabase
+        .from('messages')
+        .update({ content: renderTemplate(String(data.content ?? ''), scope) })
+        .eq('id', messageId)
+        .eq('workspace_id', ctx.workspaceId)
+        .select('id')
+        .maybeSingle()
+      if (error) throw new Error(error.message)
+      return { ok: !!updated }
+    }
+
+    case 'message_delete': {
+      const messageId = renderTemplate(String(data.message_id ?? ''), scope)
+      const { error } = await ctx.supabase
+        .from('messages')
+        .delete()
+        .eq('id', messageId)
+        .eq('workspace_id', ctx.workspaceId)
+      if (error) throw new Error(error.message)
+      return { ok: true }
     }
 
     case 'conversation_create': {
