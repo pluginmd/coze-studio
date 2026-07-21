@@ -1,0 +1,27 @@
+name: supabase-port
+
+on:
+  push:
+    paths:
+      - 'supabase-port/**'
+      - '.github/workflows/supabase-port.yml'
+  pull_request:
+    paths:
+      - 'supabase-port/**'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: supabase-port/worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: supabase-port/worker/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test

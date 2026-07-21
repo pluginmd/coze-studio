@@ -1,7 +1,36 @@
 import { createMiddleware } from 'hono/factory'
-import { jwtVerify } from 'jose'
+import { jwtVerify, createRemoteJWKSet } from 'jose'
 import { adminClient, sha256hex } from '../lib/supabase'
-import type { AppEnv } from '../env'
+import type { AppEnv, Env } from '../env'
+
+// Supabase projects sign access tokens either with the legacy HS256 JWT
+// secret or (newer projects) with asymmetric JWT signing keys published at
+// /auth/v1/.well-known/jwks.json. Verify against both.
+const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>()
+
+function remoteJwks(env: Env) {
+  const url = `${env.SUPABASE_URL.replace(/\/+$/, '')}/auth/v1/.well-known/jwks.json`
+  let jwks = jwksCache.get(url)
+  if (!jwks) {
+    jwks = createRemoteJWKSet(new URL(url))
+    jwksCache.set(url, jwks)
+  }
+  return jwks
+}
+
+async function verifySupabaseJwt(env: Env, token: string): Promise<string> {
+  if (env.SUPABASE_JWT_SECRET) {
+    try {
+      const { payload } = await jwtVerify(token, new TextEncoder().encode(env.SUPABASE_JWT_SECRET))
+      if (payload.sub) return payload.sub
+    } catch {
+      // fall through to JWKS (project may use asymmetric signing keys)
+    }
+  }
+  const { payload } = await jwtVerify(token, remoteJwks(env))
+  if (!payload.sub) throw new Error('token has no subject')
+  return payload.sub
+}
 
 // Accepts either a Supabase Auth user JWT or a workspace API key (`czk_...`).
 export const auth = createMiddleware<AppEnv>(async (c, next) => {
@@ -34,11 +63,8 @@ export const auth = createMiddleware<AppEnv>(async (c, next) => {
   }
 
   try {
-    const secret = new TextEncoder().encode(c.env.SUPABASE_JWT_SECRET)
-    const { payload } = await jwtVerify(token, secret)
-    if (!payload.sub) throw new Error('token has no subject')
     c.set('authKind', 'user')
-    c.set('userId', payload.sub)
+    c.set('userId', await verifySupabaseJwt(c.env, token))
   } catch {
     return c.json({ error: 'invalid or expired token' }, 401)
   }

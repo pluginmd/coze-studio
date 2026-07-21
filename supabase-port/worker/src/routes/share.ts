@@ -3,6 +3,7 @@ import { streamSSE } from 'hono/streaming'
 import type { Env } from '../env'
 import { adminClient } from '../lib/supabase'
 import { runChatTurn, ChatError } from '../lib/chatservice'
+import { rateLimit } from '../lib/ratelimit'
 
 // Public agent share (connector domain): unauthenticated hosted chat behind an
 // unguessable share token. End-users are scoped by a client-generated session
@@ -32,6 +33,10 @@ share.get('/:token/info', async (c) => {
 })
 
 share.post('/:token/chat', async (c) => {
+  const ip = c.req.header('cf-connecting-ip') ?? 'unknown'
+  if (!rateLimit(`share:${ip}`, 30, 5 * 60_000)) {
+    return c.json({ error: 'rate limit exceeded — try again in a few minutes' }, 429)
+  }
   const { supabase, agent } = await loadSharedAgent(c.env, c.req.param('token')!)
   if (!agent) return c.json({ error: 'invalid share link' }, 404)
   const body = await c.req
