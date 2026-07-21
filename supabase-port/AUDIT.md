@@ -290,6 +290,21 @@ Parity backend sau đợt 2: **~70%**.
 | **Storage image transforms** qua `/files/sign` | ✅ |
 | Migration 0007 guarded — apply sạch cả trên Postgres không có extension (verified PGlite) | ✅ |
 
+### Đợt vét 6 (batch 15) — khai thác triệt để phần cuối
+
+| Hạng mục | Trạng thái |
+|---|---|
+| **Realtime Broadcast chủ động**: Worker đẩy trạng thái document/workflow run lên private channel `ws:<wid>` (REST, fire-and-forget), RLS policy trên `realtime.messages` giới hạn theo membership | ✅ |
+| **pg_graphql**: GraphQL API `/graphql/v1` tự động, RLS áp dụng | ✅ |
+| **pg_stat_statements**: `admin_query_stats` RPC + `GET .../admin/perf` (owner-only) | ✅ |
+| **pgaudit**: DDL/role audit logging | ✅ |
+| **wrappers**: FDW framework enable sẵn | ✅ |
+| Migration 0008 guarded — 8/8 migrations apply sạch trên Postgres trần (verified) | ✅ |
+
+Kết luận khai thác Supabase: **14/16 mảng dùng thực chất**; 2 mảng còn lại
+(Edge Functions, PostGIS) là bỏ có chủ đích kèm lý do kiến trúc — không còn
+mảng nào bỏ sót do thiếu rà soát.
+
 Còn lại chưa port (chấp nhận, giá trị thấp hoặc phụ thuộc ngoài):
 marketplace cộng đồng đầy đủ, 18 product plugins Trung Quốc, ppstructure
 accurate parsing (cần model layout ngoài), QuickJS code node (expression

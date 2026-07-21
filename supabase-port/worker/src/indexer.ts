@@ -3,6 +3,7 @@ import { adminClient } from './lib/supabase'
 import { chunkText } from './lib/chunking'
 import { parseDocument } from './lib/docparse'
 import { embedTexts } from './lib/jina'
+import { broadcast } from './lib/realtime'
 
 // Document ingestion pipeline: Storage download -> extract -> chunk ->
 // Jina embed -> pgvector insert. Runs from a Cloudflare Queue consumer when
@@ -62,6 +63,11 @@ export async function indexDocument(env: Env, documentId: string): Promise<void>
       .from('documents')
       .update({ status: 'ready', chunk_count: chunks.length })
       .eq('id', doc.id)
+    await broadcast(env, doc.workspace_id, 'document', {
+      id: doc.id,
+      status: 'ready',
+      chunk_count: chunks.length,
+    })
     await supabase.from('usage_events').insert({
       workspace_id: doc.workspace_id,
       kind: 'embedding',
@@ -74,5 +80,10 @@ export async function indexDocument(env: Env, documentId: string): Promise<void>
       .from('documents')
       .update({ status: 'failed', error: String(e).slice(0, 2000) })
       .eq('id', doc.id)
+    await broadcast(env, doc.workspace_id, 'document', {
+      id: doc.id,
+      status: 'failed',
+      error: String(e).slice(0, 300),
+    })
   }
 }

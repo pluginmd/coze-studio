@@ -38,11 +38,15 @@ serverless toàn phần, chi phí vận hành gần bằng 0 khi idle.
 | **Supabase Queues (pgmq)** | ✅ mới | tầng queue thứ 2 cho doc indexing: `enqueue` ưu tiên CF Queues → **pgmq** (Worker cron drain mỗi 2') → inline. CF free plan vẫn có async thật |
 | **pg_cron** | ✅ mới | 3 job dọn dẹp trong DB: token OAuth chết, workflow_runs >90d, usage_events >1 năm |
 | **Vault** | ✅ mới | `POST /plugins/:pid/vault` chuyển auth secrets vào vault mã hóa at-rest; runtime tự resolve qua `vault_get` (service role) |
-| **Realtime** | ✅ một phần | publication cho `documents`/`workflow_runs`/`messages` — client tùy chỉnh subscribe bằng user JWT (RLS áp dụng) để nhận trạng thái index/run/message live; console vẫn dùng SSE+polling (đủ dùng, không thêm dependency) |
-| **PostgREST auto API** | ⚠️ chủ đích | RLS bảo vệ truy cập trực tiếp nhưng luồng chính đi qua Worker (auth thống nhất, metering, OAuth); frontend riêng có thể query đọc trực tiếp |
-| **Edge Functions (Deno)** | ❌ chủ đích | CF Worker đã là compute layer — chạy 2 runtime là phức tạp hóa, ngược yêu cầu tinh gọn |
-| **pg_graphql** | ❌ | không có client GraphQL |
-| **Wrappers (FDW), PostGIS, pgaudit** | ❌ | chưa có use case; bật sau được không đổi schema |
+| **Realtime — Postgres Changes** | ✅ | publication cho `documents`/`workflow_runs`/`messages` — client subscribe bằng user JWT (RLS áp dụng) |
+| **Realtime — Broadcast (private channels)** | ✅ mới | Worker chủ động **đẩy** trạng thái index tài liệu + workflow run lên channel `ws:<workspace_id>` (REST broadcast, không cần socket phía server); RLS policy trên `realtime.messages` chỉ cho member của workspace subscribe |
+| **pg_graphql** | ✅ mới | bật guarded → **GraphQL API tự động** tại `/graphql/v1` cho frontend tùy chỉnh, RLS áp dụng, zero code |
+| **pg_stat_statements** | ✅ mới | RPC `admin_query_stats` + endpoint `GET .../admin/perf` (owner-only) — top query theo tổng thời gian, quan sát hiệu năng không cần tool ngoài |
+| **pgaudit** | ✅ mới | bật guarded + `pgaudit.log = 'ddl, role'` — audit trail thay đổi schema/role trong Postgres logs |
+| **Wrappers (FDW)** | ✅ enable sẵn | framework bật guarded — thêm foreign table (Stripe/S3/BigQuery...) sau này không cần đổi schema |
+| **PostgREST auto API** | ⚠️ chủ đích | RLS bảo vệ truy cập trực tiếp nhưng luồng chính đi qua Worker (auth thống nhất, metering, OAuth); frontend riêng query đọc trực tiếp được |
+| **Edge Functions (Deno)** | ❌ chủ đích | CF Worker đã là compute layer duy nhất — thêm runtime Deno là ngược yêu cầu tinh gọn; app viết trên Hono (runtime-agnostic) nên vẫn chuyển được sau nếu muốn 100%-Supabase |
+| **PostGIS** | ❌ | không có tính năng geo trong domain |
 | **Branching / read replicas** | ❌ devops | bật từ dashboard khi cần scale, không ảnh hưởng code |
 
 > Migration `0007_supabase_stack.sql` **tự dò extension**: có pgmq/pg_cron/vault/
@@ -209,13 +213,20 @@ supabase-port/
 
 ### 1. Supabase
 
+**Bật extension trước** (Dashboard → Database → Extensions) để migration
+guarded kích hoạt tối đa: `pgmq`, `pg_cron`, `pg_graphql`, `pgaudit`,
+`wrappers` (các extension `vector`, `pg_stat_statements`, `supabase_vault`
+thường có sẵn). Bỏ qua extension nào → tính năng tương ứng tự tắt êm.
+
 ```bash
 cd supabase-port/supabase
 supabase link --project-ref <ref>
-supabase db push          # chạy cả 2 migrations
+supabase db push          # chạy toàn bộ migrations (0001–0008)
 ```
 
 Lấy: `SUPABASE_URL`, `service_role key`, `JWT secret` (Settings → API).
+Nếu bật thêm extension SAU khi đã push: chạy lại nội dung `0007`/`0008`
+qua SQL editor (các block đều idempotent).
 
 ### 2. Cloudflare Worker
 

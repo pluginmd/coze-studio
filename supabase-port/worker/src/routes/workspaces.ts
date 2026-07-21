@@ -115,6 +115,17 @@ workspaceScoped.delete('/members/:uid', requireAdmin, async (c) => {
   return c.json({ ok: true })
 })
 
+// Instance-level query performance (pg_stat_statements) — operator tooling,
+// owner-only. Stats are database-wide; on multi-org installs restrict access.
+workspaceScoped.get('/admin/perf', async (c) => {
+  if (c.get('wsRole') !== 'owner') return c.json({ error: 'owner role required' }, 403)
+  const { data, error } = await c.get('supabase').rpc('admin_query_stats', { p_limit: 20 })
+  if (error) {
+    return c.json({ error: 'pg_stat_statements unavailable — enable it and re-run migration 0008' }, 400)
+  }
+  return c.json({ note: 'instance-wide stats (normalized queries)', queries: data ?? [] })
+})
+
 workspaceScoped.get('/usage', async (c) => {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data } = await c

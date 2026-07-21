@@ -4,6 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AppEnv, Env } from '../env'
 import { pick } from '../lib/util'
 import { runWorkflow, SuspendError, type WfGraph, type RunOptions } from '../engine/workflow'
+import { broadcast } from '../lib/realtime'
 
 const WORKFLOW_FIELDS = ['name', 'description', 'graph', 'status']
 
@@ -176,6 +177,25 @@ interface ExecOutcome {
 // Shared execution: runs the graph, persists the run row, records usage.
 // Handles suspension (question/input nodes) by storing resumable state.
 async function executeRun(
+  env: Env,
+  supabase: SupabaseClient,
+  wid: string,
+  runId: string,
+  workflowId: string,
+  graph: WfGraph,
+  input: Record<string, unknown>,
+  opts: RunOptions
+): Promise<ExecOutcome> {
+  const outcome = await executeRunInner(env, supabase, wid, runId, workflowId, graph, input, opts)
+  await broadcast(env, wid, 'workflow_run', {
+    run_id: runId,
+    workflow_id: workflowId,
+    status: outcome.status,
+  })
+  return outcome
+}
+
+async function executeRunInner(
   env: Env,
   supabase: SupabaseClient,
   wid: string,
