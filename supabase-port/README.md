@@ -80,6 +80,14 @@ flowchart LR
 - **Auto follow-up suggestions** (mode auto/custom) qua SSE event; **LLM
   onboarding** (`GET /agents/:id/onboarding`); client abort giữa stream →
   phần trả lời dở được lưu là broken message.
+- **Shortcut commands có runtime**: `/cmd a | b` map positional vào
+  components, expand template, tùy chọn chạy workflow gắn kèm (kết quả
+  inject làm context).
+- **Multi-agent mode**: `agent.multi_agent` {enabled, sub_agents} — LLM
+  router chọn sub-agent phù hợp mỗi lượt (prompt/model/tools/knowledge của
+  sub-agent, hội thoại vẫn thuộc host; SSE event `route`).
+- **Rerank model**: `knowledge.rerank = true` over-fetch RRF rồi xếp lại
+  bằng **Jina reranker** (fallback êm khi lỗi).
 - Mọi message, tool log, usage đều persist vào Postgres.
 
 ### Workflow engine v3 — parallel DAG, interactive, versioned
@@ -236,6 +244,8 @@ Hoặc mở `https://<worker-url>/` — playground chat có sẵn.
 | GET | `.../agents/:id/onboarding` | opening dialog (manual/LLM) |
 | GET/POST | `.../datasets/:dsid/documents/:docid/chunks`, `.../chunks/:cid` | quản lý chunk |
 | POST/GET | `/v3/chat`, `/v3/chat/message/list`, `/v1/conversation/create`, `/v1/conversations` | **Coze SDK compat shim** |
+| POST | `.../plugins/mcp` + `/:pid/mcp/sync` | **kết nối MCP server** (tools/list, tools/call) |
+| GET/POST | `.../templates` + `/:tid/install` | starter templates cài 1 click |
 | GET/DELETE | `.../plugins/:pid/oauth/url`, `/status`, `/` | OAuth2 per-user |
 | GET | `/oauth/callback` | public redirect (state ký HS256) |
 | CRUD | `.../databases[/:dbid]` + rows, `rows/query` | memory: bảng dữ liệu |
@@ -260,18 +270,23 @@ an toàn), HTTP plugins + OAuth2, memory (databases + **import bảng** + user
 variables), prompt library, resource search, API keys, usage metering,
 auth + RLS, **admin console** + trang chat public.
 
-**Chưa port** (sau đợt vét P0/P1, còn lại chủ yếu P2):
+**Vượt bản gốc**: MCP plugin có runtime thật (gốc chỉ stub), RBAC + RLS
+multi-tenant (gốc creator-only), JWKS-aware auth, hybrid search 1 câu SQL,
+parse/OCR tại edge không cần sidecar.
+
+**Chưa port** (còn lại chủ yếu P2):
 
 - Visual editor kéo-thả cho workflow/agent (console dùng JSON editor; graph
   format tương thích nếu sau này muốn gắn React Flow)
 - `code` node là expression subset chứ không phải JS tùy ý (muốn full JS
-  cần QuickJS WASM); multi-agent mode (host + sub-agents)
-- Template marketplace, product plugins có sẵn, datacopy; connector kênh
-  Slack/Telegram (đã có web share + API compat)
-- ppstructure accurate parsing (trích bảng/ảnh từ PDF), rerank model
-- Share link chưa có rate limit per-IP (dùng Cloudflare WAF khi production)
-- Plugin secret lưu plaintext trong Postgres (có RLS); nâng cấp Supabase
-  Vault nếu cần mã hóa at-rest
+  cần QuickJS WASM)
+- Marketplace cộng đồng đầy đủ (đã có 3 starter templates built-in),
+  18 product plugins Trung Quốc của gốc, datacopy; connector kênh
+  Slack/Telegram (đã có web share + Coze API compat)
+- ppstructure accurate parsing (trích bảng/ảnh từ PDF)
+- Rate limit share là per-isolate best-effort (thêm Cloudflare WAF cho
+  production); plugin secret plaintext trong Postgres (có RLS) — cân nhắc
+  Supabase Vault
 
 ## Dev local
 

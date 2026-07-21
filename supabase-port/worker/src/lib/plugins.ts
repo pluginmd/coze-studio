@@ -11,6 +11,7 @@ export interface PluginRow {
   name: string
   base_url: string
   auth: PluginAuth | null
+  kind?: 'http' | 'mcp'
 }
 
 export interface ToolParameter {
@@ -42,6 +43,16 @@ export async function invokeTool(
   args: Record<string, unknown>,
   extraHeaders?: Record<string, string>
 ): Promise<ToolInvokeResult> {
+  // MCP plugins: tool.path holds the MCP tool name; auth carries headers.
+  if (plugin.kind === 'mcp') {
+    const { McpClient } = await import('./mcp')
+    const headers = ((plugin.auth as { headers?: Record<string, string> } | null)?.headers ?? {}) as Record<string, string>
+    const client = new McpClient(plugin.base_url, { ...headers, ...extraHeaders })
+    await client.initialize()
+    const body = await client.callTool(tool.path, args)
+    return { status: 200, body: body.slice(0, 20_000) }
+  }
+
   let path = tool.path.startsWith('/') ? tool.path : `/${tool.path}`
   const query = new URLSearchParams()
   const body: Record<string, unknown> = {}

@@ -310,4 +310,47 @@ const { assertWritable } = await import('../src/lib/database')
 assert.throws(() => assertWritable('read_only'), /read-only/)
 assert.doesNotThrow(() => assertWritable('unlimited'))
 
+// --- shortcuts runtime -------------------------------------------------------
+const { matchShortcut, expandShortcut } = await import('../src/lib/shortcuts')
+const shortcuts = [
+  {
+    command: '/dich',
+    template: 'Dịch đoạn sau sang {{lang}}: {{text}}',
+    components: [{ name: 'text' }, { name: 'lang' }],
+  },
+]
+const noMatch = matchShortcut(shortcuts, 'xin chào')
+assert.strictEqual(noMatch, null, 'no shortcut match')
+const hit = matchShortcut(shortcuts, '/dich xin chào | English')
+assert(hit, 'shortcut matched')
+assert.strictEqual(hit!.args.text, 'xin chào')
+assert.strictEqual(hit!.args.lang, 'English')
+assert.strictEqual(expandShortcut(hit!), 'Dịch đoạn sau sang English: xin chào')
+const bare = matchShortcut([{ command: '/help' }], '/help')
+assert(bare && expandShortcut(bare) === '', 'bare command expands to empty input')
+
+// --- mcp tool mapping --------------------------------------------------------
+const { mapMcpTools } = await import('../src/lib/mcp')
+const mapped = mapMcpTools([
+  {
+    name: 'search-files',
+    description: 'Search files',
+    inputSchema: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'q' }, limit: { type: 'number' } },
+      required: ['query'],
+    },
+  },
+])
+assert.strictEqual(mapped[0].name, 'search-files')
+assert.strictEqual(mapped[0].path, 'search-files', 'mcp name preserved in path')
+assert.strictEqual(mapped[0].parameters.length, 2)
+assert(mapped[0].parameters.find((p) => p.name === 'query')!.required, 'required propagated')
+
+// --- rate limiter ------------------------------------------------------------
+const { rateLimit } = await import('../src/lib/ratelimit')
+for (let i = 0; i < 5; i++) assert(rateLimit('t1', 5, 60_000), 'within limit ' + i)
+assert(!rateLimit('t1', 5, 60_000), 'blocked over limit')
+assert(rateLimit('t2', 5, 60_000), 'independent keys')
+
 console.log('ALL SMOKE TESTS PASSED')

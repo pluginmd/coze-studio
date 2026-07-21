@@ -22,6 +22,7 @@ import { share } from './routes/share'
 import { apps } from './routes/apps'
 import { files } from './routes/files'
 import { compatV3, compatV1 } from './routes/compat'
+import { templates } from './routes/templates'
 
 const app = new Hono<AppEnv>()
 
@@ -58,6 +59,7 @@ app.route('/v1/workspaces/:wid/prompts', prompts)
 app.route('/v1/workspaces/:wid/search', search)
 app.route('/v1/workspaces/:wid/apps', apps)
 app.route('/v1/workspaces/:wid/files', files)
+app.route('/v1/workspaces/:wid/templates', templates)
 
 app.notFound((c) => c.json({ error: 'not found' }, 404))
 app.onError((err, c) => c.json({ error: String(err?.message ?? err).slice(0, 500) }, 500))

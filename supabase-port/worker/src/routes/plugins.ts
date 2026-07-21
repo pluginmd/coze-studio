@@ -85,6 +85,95 @@ plugins.post('/import', async (c) => {
   )
 })
 
+// Connect an MCP server: initialize, list its tools, create the plugin.
+plugins.post('/mcp', async (c) => {
+  const wid = c.req.param('wid')!
+  const body = await c.req
+    .json<{ name?: string; base_url?: string; headers?: Record<string, string> }>()
+    .catch(() => ({}) as any)
+  if (!body.base_url?.trim()) return c.json({ error: 'base_url (MCP server URL) is required' }, 400)
+
+  const { McpClient, mapMcpTools } = await import('../lib/mcp')
+  const client = new McpClient(body.base_url, body.headers ?? {})
+  let mcpTools
+  try {
+    await client.initialize()
+    mcpTools = await client.listTools()
+  } catch (e) {
+    return c.json({ error: `mcp connection failed: ${String(e instanceof Error ? e.message : e).slice(0, 300)}` }, 502)
+  }
+  if (!mcpTools.length) return c.json({ error: 'mcp server exposes no tools' }, 400)
+
+  const supabase = c.get('supabase')
+  const { data: plugin, error } = await supabase
+    .from('plugins')
+    .insert({
+      workspace_id: wid,
+      name: (body.name?.trim() || `MCP: ${new URL(body.base_url).hostname}`).slice(0, 120),
+      description: `MCP server at ${body.base_url}`,
+      base_url: body.base_url,
+      kind: 'mcp',
+      auth: { type: 'none', headers: body.headers ?? {} },
+    })
+    .select('id')
+    .single()
+  if (error) return c.json({ error: error.message }, 400)
+
+  const rows = mapMcpTools(mcpTools).map((t) => ({ ...t, plugin_id: plugin.id, workspace_id: wid }))
+  const { error: toolsError } = await supabase.from('plugin_tools').insert(rows)
+  if (toolsError) return c.json({ error: toolsError.message, plugin_id: plugin.id }, 500)
+  return c.json({ plugin_id: plugin.id, tools_imported: rows.length }, 201)
+})
+
+// Re-sync tools from the MCP server (add new, update changed, drop removed).
+plugins.post('/:pid/mcp/sync', async (c) => {
+  const supabase = c.get('supabase')
+  const wid = c.req.param('wid')!
+  const { data: plugin } = await supabase
+    .from('plugins')
+    .select()
+    .eq('id', c.req.param('pid')!)
+    .eq('workspace_id', wid)
+    .maybeSingle()
+  if (!plugin) return c.json({ error: 'plugin not found' }, 404)
+  if (plugin.kind !== 'mcp') return c.json({ error: 'not an mcp plugin' }, 400)
+
+  const { McpClient, mapMcpTools } = await import('../lib/mcp')
+  const client = new McpClient(plugin.base_url, (plugin.auth?.headers ?? {}) as Record<string, string>)
+  let mapped
+  try {
+    await client.initialize()
+    mapped = mapMcpTools(await client.listTools())
+  } catch (e) {
+    return c.json({ error: `mcp sync failed: ${String(e instanceof Error ? e.message : e).slice(0, 300)}` }, 502)
+  }
+
+  const { data: existing } = await supabase
+    .from('plugin_tools')
+    .select('id, path')
+    .eq('plugin_id', plugin.id)
+  const byPath = new Map((existing ?? []).map((t) => [t.path, t.id]))
+  let added = 0
+  let updated = 0
+  for (const t of mapped) {
+    const id = byPath.get(t.path)
+    if (id) {
+      await supabase
+        .from('plugin_tools')
+        .update({ name: t.name, description: t.description, parameters: t.parameters })
+        .eq('id', id)
+      byPath.delete(t.path)
+      updated++
+    } else {
+      await supabase.from('plugin_tools').insert({ ...t, plugin_id: plugin.id, workspace_id: wid })
+      added++
+    }
+  }
+  const stale = [...byPath.values()]
+  if (stale.length) await supabase.from('plugin_tools').delete().in('id', stale)
+  return c.json({ ok: true, added, updated, removed: stale.length })
+})
+
 // Publish: snapshot plugin + tools as a version. All active tools must have
 // passed a debug invocation unless force=true (original publish gate).
 plugins.post('/:pid/publish', async (c) => {

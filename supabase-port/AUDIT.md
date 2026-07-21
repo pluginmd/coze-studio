@@ -245,9 +245,24 @@ Sau audit này, 6 batch đã đóng toàn bộ **P0 (8/8)** và phần lớn **P
 | + | Plugin debug gate + releases; files service; console mở rộng | ✅ batch 4–6 |
 
 **Node types: 37/42.** Parity backend ước tính sau đợt vét: **~60–65%**
-(từ ~35–40%). Còn lại thuộc P2: visual IDE, multi-agent mode, marketplace/
-templates/product plugins, ppstructure, rerank model, MCP, shortcuts runtime,
-conversation sections đúng nghĩa, variables channels/versioned meta.
+(từ ~35–40%).
+
+### Đợt vét 2 (batch 7–9, cùng ngày)
+
+| Hạng mục | Trạng thái |
+|---|---|
+| JWKS auth (Supabase asymmetric signing keys) — gỡ blocker deploy | ✅ batch 7 |
+| Rate limit share per-IP (best-effort) + GitHub Actions CI | ✅ batch 7 |
+| Shortcuts runtime (expand template + workflow-bound) | ✅ batch 8 |
+| Multi-agent mode (LLM router host → sub-agents) | ✅ batch 8 |
+| Rerank model (Jina reranker trên RRF) | ✅ batch 8 |
+| **MCP plugins — runtime thật** (initialize/tools list/call, sync) — vượt gốc (gốc stub) | ✅ batch 9 |
+| Starter templates built-in + install 1 click | ✅ batch 9 |
+
+Parity backend sau đợt 2: **~70%**. Còn lại thuộc P2 thuần: visual IDE
+kéo-thả, marketplace cộng đồng, 18 product plugins, ppstructure, QuickJS
+code node, conversation sections, variables channels/versioned meta,
+datacopy.
 
 *Sinh bởi audit tự động 6-agent + đối chiếu thủ công, 2026-07-21. Dẫn chứng
 file gốc nằm trong từng inventory; hỏi lại nếu cần trace mục cụ thể.*
