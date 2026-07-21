@@ -216,5 +216,38 @@ nhúng chính thức (share page là iframe-able nhưng không phải SDK).
 
 ---
 
+---
+
+## CẬP NHẬT — Đợt vét P0/P1 (6 batch, cùng ngày)
+
+Sau audit này, 6 batch đã đóng toàn bộ **P0 (8/8)** và phần lớn **P1**:
+
+| # | Hạng mục | Trạng thái |
+|---|---|---|
+| P0-1 | Multimodal chat (ảnh url/base64 → vision parts) | ✅ batch 2 |
+| P0-2 | Recall config per agent (top_k/min_score/search_type/auto vs on-demand) | ✅ batch 2 |
+| P0-3 | Model params đầy đủ (top_p, penalties, response_format, history_rounds) | ✅ batch 2 |
+| P0-4 | Chunk/slice management API (list/add/edit re-embed/enable-disable/delete) | ✅ batch 1 |
+| P0-5 | Stop generation (client abort → lưu broken message) | ✅ batch 2 |
+| P0-6 | Workflow publish + version snapshot + run ghim version | ✅ batch 3 |
+| P0-7 | Plugin import OpenAPI/Swagger/curl/Postman (JSON+YAML, $ref) | ✅ batch 4 |
+| P0-8 | Min-score threshold + query rewrite đa lượt | ✅ batch 1 |
+| P1-9 | Streaming SSE + async workflow run; per-node retry/timeout/error-branch | ✅ batch 3 |
+| P1-10 | question/input interrupt–resume (state persist, seed kết quả cũ) | ✅ batch 3 |
+| P1-11 | Database rw_mode + per-user scoping + update/delete tools | ✅ batch 5 |
+| P1-12 | Auto follow-up suggestions + LLM onboarding | ✅ batch 2 |
+| P1-13 | Custom separators + heading hierarchical chunking | ✅ batch 1 |
+| P1-14 | Shortcuts runtime | ❌ còn (lưu config, chưa thực thi panel) |
+| P1-15 | API shape tương thích /v3/chat + /v1/conversations | ✅ batch 5 |
+| P1-16 | List variables (op append, bounded) | ✅ batch 5 (channels/versioned meta chưa) |
+| P1-17 | App packaging + publish deep snapshot | ✅ batch 5 |
+| + | Node hội thoại đủ 9, variable_assign, output_emitter, loop break_if | ✅ batch 3 |
+| + | Plugin debug gate + releases; files service; console mở rộng | ✅ batch 4–6 |
+
+**Node types: 37/42.** Parity backend ước tính sau đợt vét: **~60–65%**
+(từ ~35–40%). Còn lại thuộc P2: visual IDE, multi-agent mode, marketplace/
+templates/product plugins, ppstructure, rerank model, MCP, shortcuts runtime,
+conversation sections đúng nghĩa, variables channels/versioned meta.
+
 *Sinh bởi audit tự động 6-agent + đối chiếu thủ công, 2026-07-21. Dẫn chứng
 file gốc nằm trong từng inventory; hỏi lại nếu cần trace mục cụ thể.*

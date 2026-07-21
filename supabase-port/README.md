@@ -55,52 +55,61 @@ flowchart LR
 
 1. Upload tài liệu — **PDF, DOCX, XLSX, ảnh (OCR qua OpenAI vision)**,
    txt/md/html/json/csv — vào Supabase Storage (text hoặc `content_base64`).
-2. Queue consumer (hoặc `waitUntil` trên free plan): parse theo định dạng →
-   chunk (paragraph-aware, overlap) → **Jina embeddings** (batch 32) → insert
-   `chunks` (pgvector).
-3. Truy vấn: embed câu hỏi (`retrieval.query`) → RPC `match_chunks` chạy
-   **hybrid search** (HNSW cosine + FTS keyword, trộn Reciprocal Rank Fusion)
-   ngay trong Postgres — thay cả Milvus lẫn Elasticsearch bằng 1 câu SQL.
+2. Parse theo định dạng → chunk theo **strategy per dataset** (auto
+   paragraph / custom separators / **heading hierarchical** với title-path,
+   trim URL+email) → **Jina embeddings** → insert `chunks` (pgvector).
+3. Truy vấn: query rewrite đa lượt (tùy chọn) → RPC `match_chunks` với
+   **search_type** semantic/fulltext/hybrid (RRF), **min_score** threshold,
+   chỉ lấy chunk `enabled` — thay Milvus + Elasticsearch bằng 1 câu SQL.
+4. **Quản lý chunk (slice)**: xem theo document, thêm thủ công (embed ngay),
+   sửa nội dung (re-embed), enable/disable, xóa.
 
 ### Agent runtime
 
-- System prompt hỗ trợ biến `{{var.x}}` = biến tĩnh của agent **+ long-term
-  user variables** (memory domain) load theo `user_key`.
-- Context RAG + lịch sử hội thoại + **OpenAI streaming** (SSE) với vòng lặp
-  tool-calling (tối đa 5 vòng).
-- Tool của agent gồm 3 loại, hợp nhất một interface:
-  1. **HTTP plugin tools** — auth `none` / `api_key` / **OAuth2 per-user**
-     (authorization-code + refresh token tự động);
-  2. **Agent databases** — mỗi database sinh tool `query_*` / `insert_*` với
-     JSON-schema từ cột đã khai báo;
-  3. **Workflows** — mỗi workflow gắn vào agent thành một function
-     (tham số lấy từ `inputs` của node start).
+- **Multimodal**: chat nhận ảnh (url/base64) qua `attachments`, đẩy vào
+  vision model dạng content parts.
+- Model params đầy đủ: `temperature`, `max_tokens`, `top_p`,
+  `frequency/presence_penalty`, `response_format` (json mode),
+  `history_rounds` (cửa sổ hội thoại cấu hình được).
+- **Recall config per agent** (`agent.knowledge`): `top_k`, `min_score`,
+  `search_type`, `auto` (false → recall thành tool `search_knowledge`
+  on-demand), query rewrite đa lượt trước khi retrieve.
+- System prompt hỗ trợ `{{var.x}}` = biến tĩnh + long-term user variables.
+- Tool hợp nhất 3 loại: HTTP plugins (OAuth2 per-user), databases
+  (`query/insert/update/delete_*` theo rw_mode), workflows-as-tools.
+- **Auto follow-up suggestions** (mode auto/custom) qua SSE event; **LLM
+  onboarding** (`GET /agents/:id/onboarding`); client abort giữa stream →
+  phần trả lời dở được lưu là broken message.
 - Mọi message, tool log, usage đều persist vào Postgres.
 
-### Workflow engine v2 — parallel DAG
+### Workflow engine v3 — parallel DAG, interactive, versioned
 
 Graph JSON `{nodes, edges}`, thực thi **DAG song song theo wave**: node hết
 phụ thuộc chạy đồng thời; nhánh không được chọn bị prune lan truyền. Template
 `{{nodeId.field}}` tham chiếu kết quả node trước (giữ nguyên kiểu dữ liệu khi
-đứng một mình). Mỗi run ghi `workflow_runs` đầy đủ input/output/node_results
-(kể cả khi fail), LLM usage cộng dồn vào `usage_events`.
+đứng một mình).
 
-**27 node types**:
+**Chế độ chạy**: sync · **SSE streaming** (event `node_start`/`node_finish`/
+`message`) · **async background** (202 + poll `GET /runs/:id`). **Publish
+version** (`workflow_releases`) và run ghim theo version. **Interrupt–resume**:
+node `question`/`input` treo run (status `suspended`, state persist), resume
+qua `POST /runs/:id/resume` — kết quả node đã chạy được seed lại, không chạy
+lại. **Error policy per-node** (`on_error`): retry, timeout_ms, strategy
+`throw`/`default`/`branch` (edge label `error`).
+
+**37 node types**:
 
 | Nhóm | Node |
 |---|---|
-| Luồng | `start`, `end`, `condition`, `selector` (multi-branch), `loop` (sub-workflow/item, tuần tự), `batch` (song song, concurrency), `sub_workflow` |
-| AI | `llm`, `intent` (phân loại intent, tự branch theo edge label) |
-| Knowledge | `knowledge_retrieve`, `knowledge_index` (ghi text vào dataset), `knowledge_delete` |
-| Database | `database_query`, `database_insert`, `database_update`, `database_delete` |
-| Hội thoại | `conversation_create`, `message_create`, `message_list` |
-| Tích hợp | `plugin` (kèm OAuth2), `http` (request tự do, timeout) |
-| Dữ liệu | `template`, `code` (biểu thức an toàn — AST interpreter, không eval), `text_processor` (concat/split/replace/substring/case/trim), `json_parse`, `json_stringify`, `variable_aggregator` |
-
-`code` node: Workers cấm `eval`, nên biểu thức được parse thành AST (jsep) và
-thông dịch với whitelist ~30 hàm (`sum`, `pluck`, `split`, `get`, ...) — chặn
-prototype access, giới hạn độ phức tạp. Không phải JS tùy ý nhưng đủ cho
-transform dữ liệu thường gặp.
+| Luồng | `start`, `end`, `condition`, `selector`, `loop` (+`break_if`), `batch` (concurrency), `sub_workflow` |
+| Tương tác | `question` (hỏi user, choices), `input` (nhận input giữa run), `output_emitter` (message trung gian streaming) |
+| AI | `llm`, `intent` (tự branch theo edge label) |
+| Knowledge | `knowledge_retrieve` (search_type/min_score), `knowledge_index`, `knowledge_delete` |
+| Database | `database_query/insert/update/delete` (tôn trọng rw_mode + per-user scope) |
+| Hội thoại | `conversation_create/update/delete/list/clear`, `message_create/edit/delete/list` |
+| Memory | `variable_assign` (ghi user variables) |
+| Tích hợp | `plugin` (OAuth2), `http` (timeout) |
+| Dữ liệu | `template`, `code` (AST interpreter an toàn, ~30 hàm), `text_processor`, `json_parse`, `json_stringify`, `variable_aggregator` |
 
 Giới hạn an toàn: 500 node/run, 100 waves, sub-workflow depth 3, loop/batch ≤ 100 items.
 
@@ -218,7 +227,15 @@ Hoặc mở `https://<worker-url>/` — playground chat có sẵn.
 | GET/DELETE | `.../conversations[/:id]` + POST `/:id/clear` | hội thoại |
 | CRUD | `.../datasets[/:dsid]` + documents, reindex, search | knowledge (PDF/DOCX/XLSX/text) |
 | CRUD | `.../workflows[/:id]` + `/:id/run`, `/:id/runs` | workflow DAG |
-| CRUD | `.../plugins[/:pid]/tools[/:tid]` + `invoke` | HTTP tools |
+| CRUD | `.../plugins[/:pid]/tools[/:tid]` + `invoke` | HTTP tools (debug gate) |
+| POST | `.../plugins/import` | import OpenAPI/Swagger/curl/Postman |
+| POST/GET | `.../plugins/:pid/publish`, `/releases` | plugin versioning |
+| POST/GET | `.../workflows/:id/publish`, `/releases`, `/runs/:rid`, `/runs/:rid/resume` | workflow lifecycle + resume |
+| CRUD | `.../apps[/:id]` + `/:id/publish`, `/releases[/:v]` | app packaging |
+| POST | `.../files` + `/sign`, `/delete` | file service (signed URL 7d) |
+| GET | `.../agents/:id/onboarding` | opening dialog (manual/LLM) |
+| GET/POST | `.../datasets/:dsid/documents/:docid/chunks`, `.../chunks/:cid` | quản lý chunk |
+| POST/GET | `/v3/chat`, `/v3/chat/message/list`, `/v1/conversation/create`, `/v1/conversations` | **Coze SDK compat shim** |
 | GET/DELETE | `.../plugins/:pid/oauth/url`, `/status`, `/` | OAuth2 per-user |
 | GET | `/oauth/callback` | public redirect (state ký HS256) |
 | CRUD | `.../databases[/:dbid]` + rows, `rows/query` | memory: bảng dữ liệu |
@@ -243,15 +260,15 @@ an toàn), HTTP plugins + OAuth2, memory (databases + **import bảng** + user
 variables), prompt library, resource search, API keys, usage metering,
 auth + RLS, **admin console** + trang chat public.
 
-**Chưa port** (chủ đích, ngoài phạm vi lean):
+**Chưa port** (sau đợt vét P0/P1, còn lại chủ yếu P2):
 
 - Visual editor kéo-thả cho workflow/agent (console dùng JSON editor; graph
   format tương thích nếu sau này muốn gắn React Flow)
-- Workflow: `question_answer` (pause/resume tương tác giữa run — engine hiện
-  chạy đồng bộ), `code` node là expression subset chứ không phải JS tùy ý
-  (muốn full JS cần QuickJS WASM)
-- App packaging (đóng gói multi-agent app), template marketplace, datacopy;
-  connector mới có web share link (chưa có Slack/Telegram/...)
+- `code` node là expression subset chứ không phải JS tùy ý (muốn full JS
+  cần QuickJS WASM); multi-agent mode (host + sub-agents)
+- Template marketplace, product plugins có sẵn, datacopy; connector kênh
+  Slack/Telegram (đã có web share + API compat)
+- ppstructure accurate parsing (trích bảng/ảnh từ PDF), rerank model
 - Share link chưa có rate limit per-IP (dùng Cloudflare WAF khi production)
 - Plugin secret lưu plaintext trong Postgres (có RLS); nâng cấp Supabase
   Vault nếu cần mã hóa at-rest

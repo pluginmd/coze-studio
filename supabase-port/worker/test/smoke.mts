@@ -177,4 +177,137 @@ const r5 = await runWorkflow(fakeEnv, fakeSupabase, 'ws', graph3, {
 })
 assert(Math.abs(Number((r5.output as any).total) - 165) < 1e-9, 'code node total ≈ 165: ' + JSON.stringify(r5.output))
 
+// --- chunking strategies -----------------------------------------------------
+const headingChunks = chunkText(
+  '# Guide\n\nIntro text.\n\n## Setup\n\nInstall steps here.\n\n## Usage\n\nRun it.',
+  { mode: 'heading', size: 500 }
+)
+assert(headingChunks.some((c) => c.startsWith('Guide > Setup\n\n')), 'heading path prefix: ' + JSON.stringify(headingChunks))
+assert.strictEqual(headingChunks.length, 3, 'heading sections')
+const sepChunks = chunkText('a###b###c', { mode: 'separator', separators: ['###'], size: 500, overlap: 0 })
+assert.strictEqual(sepChunks.length, 1, 'separator blocks packed')
+assert(sepChunks[0].includes('a') && sepChunks[0].includes('c'), 'separator content kept')
+
+// --- plugin import: openapi3 / swagger2 / curl -------------------------------
+const { importPluginSpec } = await import('../src/lib/pluginimport')
+const oai = importPluginSpec(JSON.stringify({
+  openapi: '3.0.0',
+  info: { title: 'Petstore', description: 'demo' },
+  servers: [{ url: 'https://api.pets.dev/v1' }],
+  paths: {
+    '/pets/{petId}': {
+      get: {
+        operationId: 'getPet',
+        summary: 'Get a pet',
+        parameters: [
+          { name: 'petId', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'verbose', in: 'query', schema: { type: 'boolean' } },
+        ],
+      },
+    },
+    '/pets': {
+      post: {
+        operationId: 'createPet',
+        requestBody: {
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/Pet' } } },
+        },
+      },
+    },
+  },
+  components: { schemas: { Pet: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, age: { type: 'integer' } } } } },
+}))
+assert.strictEqual(oai.base_url, 'https://api.pets.dev/v1')
+assert.strictEqual(oai.tools.length, 2)
+const getPet = oai.tools.find((t) => t.name === 'getPet')!
+assert.deepStrictEqual(getPet.parameters.map((p) => [p.name, p.in]), [['petId', 'path'], ['verbose', 'query']])
+const createPet = oai.tools.find((t) => t.name === 'createPet')!
+assert(createPet.parameters.some((p) => p.name === 'name' && p.in === 'body' && p.required), '$ref body resolved')
+
+const sw = importPluginSpec(JSON.stringify({
+  swagger: '2.0', info: { title: 'Old' }, host: 'old.api.com', basePath: '/api', schemes: ['https'],
+  paths: { '/things': { get: { parameters: [{ name: 'q', in: 'query', type: 'string' }] } } },
+}))
+assert.strictEqual(sw.base_url, 'https://old.api.com/api', 'swagger2 base url')
+
+const curl = importPluginSpec(
+  `curl -X POST 'https://api.x.dev/v2/send?priority=high' -H 'Authorization: Bearer abc' -d '{"to": "an", "count": 2}'`
+)
+assert.strictEqual(curl.base_url, 'https://api.x.dev')
+assert.strictEqual(curl.tools[0].method, 'POST')
+assert.strictEqual(curl.tools[0].path, '/v2/send')
+const curlParams = Object.fromEntries(curl.tools[0].parameters.map((p) => [p.name, p]))
+assert.strictEqual(curlParams['priority'].in, 'query')
+assert.strictEqual(curlParams['count'].schema!.type, 'number', 'curl body typing')
+assert(curl.warnings.some((w) => w.includes('Authorization')), 'auth header warning')
+
+// --- workflow engine: on_error strategies ------------------------------------
+const { SuspendError } = await import('../src/engine/workflow')
+const errGraph: WfGraph = {
+  nodes: [
+    { id: 'start', type: 'start', data: {} },
+    { id: 'boom', type: 'json_parse', data: { text: 'not-json', on_error: { strategy: 'branch', retry: 1 } } },
+    { id: 'recover', type: 'template', data: { template: 'recovered: {{boom.error}}' } },
+    { id: 'normal', type: 'template', data: { template: 'should not run' } },
+    { id: 'end', type: 'end', data: { template: '{{recover.text}}{{normal.text}}' } },
+  ],
+  edges: [
+    { source: 'start', target: 'boom' },
+    { source: 'boom', target: 'recover', label: 'error' },
+    { source: 'boom', target: 'normal' },
+    { source: 'recover', target: 'end' },
+    { source: 'normal', target: 'end' },
+  ],
+}
+const rErr = await runWorkflow(fakeEnv, fakeSupabase, 'ws', errGraph, {})
+assert((rErr.output as any).text.startsWith('recovered:'), 'error branch taken: ' + JSON.stringify(rErr.output))
+assert.strictEqual(rErr.nodeResults['normal'], undefined, 'normal branch pruned on error')
+
+const defGraph: WfGraph = {
+  nodes: [
+    { id: 'start', type: 'start', data: {} },
+    { id: 'boom', type: 'json_parse', data: { text: 'nope', on_error: { strategy: 'default', default: { value: 'fallback' } } } },
+    { id: 'end', type: 'end', data: { template: '{{boom.value}}' } },
+  ],
+  edges: [
+    { source: 'start', target: 'boom' },
+    { source: 'boom', target: 'end' },
+  ],
+}
+const rDef = await runWorkflow(fakeEnv, fakeSupabase, 'ws', defGraph, {})
+assert.strictEqual((rDef.output as any).text, 'fallback', 'default-value strategy')
+
+// --- workflow engine: suspend / resume ---------------------------------------
+const qGraph: WfGraph = {
+  nodes: [
+    { id: 'start', type: 'start', data: {} },
+    { id: 'q', type: 'question', data: { question: 'Chọn màu {{input.topic}}?', options: ['đỏ', 'xanh'] } },
+    { id: 'end', type: 'end', data: { template: 'answer={{q.answer}}' } },
+  ],
+  edges: [
+    { source: 'start', target: 'q' },
+    { source: 'q', target: 'end' },
+  ],
+}
+let suspendErr: InstanceType<typeof SuspendError> | null = null
+try {
+  await runWorkflow(fakeEnv, fakeSupabase, 'ws', qGraph, { topic: 'áo' })
+  assert.fail('should have suspended')
+} catch (e: any) {
+  assert(e instanceof SuspendError, 'suspend error type')
+  suspendErr = e
+}
+assert.strictEqual(suspendErr!.nodeId, 'q')
+assert(suspendErr!.question.includes('áo'), 'question templated')
+assert.deepStrictEqual(suspendErr!.options, ['đỏ', 'xanh'])
+const resumed = await runWorkflow(fakeEnv, fakeSupabase, 'ws', qGraph, { topic: 'áo' }, {
+  preset: suspendErr!.results,
+  resume: { nodeId: 'q', value: 'xanh' },
+})
+assert.strictEqual((resumed.output as any).text, 'answer=xanh', 'resumed with answer')
+
+// --- database rw helpers -----------------------------------------------------
+const { assertWritable } = await import('../src/lib/database')
+assert.throws(() => assertWritable('read_only'), /read-only/)
+assert.doesNotThrow(() => assertWritable('unlimited'))
+
 console.log('ALL SMOKE TESTS PASSED')

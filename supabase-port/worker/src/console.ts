@@ -44,8 +44,8 @@ export const consoleHtml = `<!doctype html>
 <script>
 'use strict';
 var S = { token: localStorage.getItem('cz-token') || '', wid: localStorage.getItem('cz-wid') || '', view: 'agents' };
-var VIEWS = ['agents','chat','knowledge','workflows','plugins','databases','prompts','keys','usage','search','settings'];
-var LABELS = { agents:'Agents', chat:'Chat', knowledge:'Knowledge', workflows:'Workflows', plugins:'Plugins', databases:'Databases', prompts:'Prompts', keys:'API Keys', usage:'Usage', search:'Search', settings:'Settings' };
+var VIEWS = ['agents','chat','knowledge','workflows','plugins','databases','apps','prompts','keys','usage','search','settings'];
+var LABELS = { agents:'Agents', chat:'Chat', knowledge:'Knowledge', workflows:'Workflows', plugins:'Plugins', databases:'Databases', apps:'Apps', prompts:'Prompts', keys:'API Keys', usage:'Usage', search:'Search', settings:'Settings' };
 
 function toast(msg) {
   var t = document.getElementById('toast');
@@ -90,7 +90,7 @@ function go(view) {
   S.view = view;
   VIEWS.forEach(function(v){ document.getElementById('nav-' + v).classList.toggle('active', v === view); });
   ({ agents: rAgents, chat: rChat, knowledge: rKnowledge, workflows: rWorkflows, plugins: rPlugins,
-     databases: rDatabases, prompts: rPrompts, keys: rKeys, usage: rUsage, search: rSearch, settings: rSettings })[view]();
+     databases: rDatabases, apps: rApps, prompts: rPrompts, keys: rKeys, usage: rUsage, search: rSearch, settings: rSettings })[view]();
 }
 function loadWorkspaces() {
   return api('GET', '/workspaces').then(function(list){
@@ -164,6 +164,7 @@ function editAgent(id) {
 
 // ---------- chat ----------
 var chatConv = null;
+var chatAbort = null;
 function rChat() {
   var m = main();
   m.appendChild(el('h2', { text: 'Chat' }));
@@ -172,26 +173,39 @@ function rChat() {
     el('button', { class: 'b', text: 'Hội thoại mới', onclick: function(){ chatConv = null; document.getElementById('chatlog').innerHTML = ''; } }));
   m.appendChild(bar);
   m.appendChild(el('div', { id: 'chatlog' }));
+  var sq = el('div', { id: 'chat-sq' });
+  m.appendChild(sq);
   var input = el('input', { placeholder: 'Tin nhắn... (Enter để gửi)', style: 'flex:1' });
-  m.appendChild(el('div', { class: 'row' }, input, el('button', { class: 'b primary', text: 'Gửi', onclick: send })));
+  var stopBtn = el('button', { class: 'b', text: '⏹ Dừng', onclick: function(){ if (chatAbort) chatAbort.abort(); } });
+  m.appendChild(el('div', { class: 'row' }, input, el('button', { class: 'b primary', text: 'Gửi', onclick: function(){ send(input.value); } }), stopBtn));
   wapi('GET', '/agents').then(function(list){
     list.forEach(function(a){ sel.appendChild(el('option', { value: a.id, text: a.name })); });
   }).catch(err);
-  input.addEventListener('keydown', function(e){ if (e.key === 'Enter') send(); });
+  input.addEventListener('keydown', function(e){ if (e.key === 'Enter') send(input.value); });
   function append(text, cls) {
     var log = document.getElementById('chatlog');
     var d = el('div', { text: text }); if (cls) d.className = cls;
     log.appendChild(d); log.scrollTop = log.scrollHeight; return d;
   }
-  function send() {
-    var message = input.value.trim(); if (!message || !sel.value) return;
-    input.value = '';
+  function showSuggestions(list) {
+    sq.innerHTML = '';
+    (list || []).forEach(function(q){
+      var chip = el('button', { class: 'b', text: q, onclick: function(){ send(q); } });
+      chip.style.fontSize = '12px'; chip.style.margin = '2px';
+      sq.appendChild(chip);
+    });
+  }
+  function send(message) {
+    message = (message || '').trim(); if (!message || !sel.value) return;
+    input.value = ''; showSuggestions([]);
     append('Bạn: ' + message, 'cu');
     var reply = append('');
+    chatAbort = new AbortController();
     fetch('/v1/workspaces/' + S.wid + '/chat', {
       method: 'POST',
       headers: { 'authorization': 'Bearer ' + S.token, 'content-type': 'application/json' },
-      body: JSON.stringify({ agent_id: sel.value, conversation_id: chatConv, message: message })
+      body: JSON.stringify({ agent_id: sel.value, conversation_id: chatConv, message: message }),
+      signal: chatAbort.signal
     }).then(function(res){
       if (!res.ok) { res.text().then(function(t){ reply.textContent = 'Lỗi: ' + t; }); return; }
       var reader = res.body.getReader(); var dec = new TextDecoder(); var buf = ''; var event = '';
@@ -207,11 +221,13 @@ function rChat() {
           if (event === 'start') chatConv = data.conversation_id;
           else if (event === 'delta') reply.textContent += data.content;
           else if (event === 'tool_call') append('[gọi tool: ' + data.name + ']', 'ct');
+          else if (event === 'suggestion') showSuggestions(data.suggestions);
+          else if (event === 'done' && data.suggestions) showSuggestions(data.suggestions);
           else if (event === 'error') append('[lỗi] ' + data.error, 'ct');
         }
         pump();
-      }); })();
-    });
+      }).catch(function(){ append('[đã dừng — phần trả lời dở được lưu là broken]', 'ct'); }); })();
+    }).catch(function(){ append('[đã dừng]', 'ct'); });
   }
 }
 
@@ -264,6 +280,8 @@ function rKnowledge() {
       t.appendChild(el('tr', {}, el('th', { text: 'Tài liệu' }), el('th', { text: 'Trạng thái' }), el('th', { text: 'Chunks' }), el('th')));
       docs.forEach(function(d){
         var acts = el('td', {},
+          el('a', { class: 'link', text: 'chunks', onclick: function(){ viewChunks(dsid, d.id, d.name); } }),
+          document.createTextNode(' '),
           el('a', { class: 'link', text: 'reindex', onclick: function(){ wapi('POST', '/datasets/' + dsid + '/documents/' + d.id + '/reindex').then(function(){ toast('✅ reindex'); }).catch(err); } }),
           document.createTextNode(' '),
           el('a', { class: 'link', text: 'xóa', onclick: function(){ wapi('DELETE', '/datasets/' + dsid + '/documents/' + d.id).then(function(){ listDocs(dsid, docsBox); }).catch(err); } }));
@@ -274,6 +292,44 @@ function rKnowledge() {
       docsBox.appendChild(t);
     }).catch(err);
   }
+}
+
+function viewChunks(dsid, docid, docName) {
+  var m = main();
+  m.appendChild(el('h2', { text: 'Chunks: ' + docName }));
+  var addBox = el('textarea', { rows: 3, placeholder: 'Nội dung chunk mới (sẽ được embed ngay)...' });
+  m.appendChild(el('div', { class: 'card' }, addBox,
+    el('button', { class: 'b primary', text: '+ Thêm chunk', onclick: function(){
+      if (!addBox.value.trim()) return;
+      wapi('POST', '/datasets/' + dsid + '/documents/' + docid + '/chunks', { content: addBox.value })
+        .then(function(){ viewChunks(dsid, docid, docName); }).catch(err);
+    }})));
+  var listBox = el('div'); m.appendChild(listBox);
+  m.appendChild(el('button', { class: 'b', text: '← Knowledge', onclick: rKnowledge }));
+  wapi('GET', '/datasets/' + dsid + '/documents/' + docid + '/chunks?limit=100').then(function(chunks){
+    chunks.forEach(function(ch){
+      var card = el('div', { class: 'card' });
+      if (!ch.enabled) card.style.opacity = '0.5';
+      card.appendChild(el('div', { class: 'muted', text: '#' + ch.seq + (ch.enabled ? '' : ' (disabled)') }));
+      card.appendChild(el('div', { text: ch.content.slice(0, 400) }));
+      card.appendChild(el('div', { class: 'row' },
+        el('a', { class: 'link', text: ch.enabled ? 'disable' : 'enable', onclick: function(){
+          wapi('PATCH', '/datasets/' + dsid + '/chunks/' + ch.id, { enabled: !ch.enabled })
+            .then(function(){ viewChunks(dsid, docid, docName); }).catch(err);
+        }}),
+        el('a', { class: 'link', text: 'sửa', onclick: function(){
+          var next = prompt('Nội dung mới (sẽ re-embed):', ch.content); if (next === null) return;
+          wapi('PATCH', '/datasets/' + dsid + '/chunks/' + ch.id, { content: next })
+            .then(function(){ viewChunks(dsid, docid, docName); }).catch(err);
+        }}),
+        el('a', { class: 'link', text: 'xóa', onclick: function(){
+          wapi('DELETE', '/datasets/' + dsid + '/chunks/' + ch.id)
+            .then(function(){ viewChunks(dsid, docid, docName); }).catch(err);
+        }})));
+      listBox.appendChild(card);
+    });
+    if (!chunks.length) listBox.appendChild(el('div', { class: 'muted', text: 'Chưa có chunk.' }));
+  }).catch(err);
 }
 
 // ---------- generic JSON-resource sections ----------
@@ -325,15 +381,48 @@ var rWorkflows = jsonSection('Workflows', '/workflows',
   function(m, wf) {
     var inBox = jsonBox({}, 4);
     var out = el('div');
+    function renderOutcome(r) {
+      out.innerHTML = '';
+      if (r.status === 'suspended') {
+        var ans = el('input', { placeholder: 'Câu trả lời...' , style: 'flex:1' });
+        var card = el('div', { class: 'card' },
+          el('div', {}, el('b', { text: '⏸ Workflow đang chờ: ' }), document.createTextNode(r.question || '')),
+          el('div', { class: 'muted', text: (r.options || []).length ? 'Lựa chọn: ' + r.options.join(' | ') : '' }),
+          el('div', { class: 'row' }, ans, el('button', { class: 'b primary', text: 'Trả lời & tiếp tục', onclick: function(){
+            wapi('POST', '/workflows/' + wf.id + '/runs/' + r.run_id + '/resume', { value: ans.value })
+              .then(renderOutcome).catch(err);
+          }})));
+        out.appendChild(card);
+      } else {
+        out.appendChild(jsonBox(r, 14));
+      }
+    }
     m.appendChild(el('div', { class: 'card' },
-      el('div', { text: 'Run với input:' }), inBox,
+      el('div', { class: 'row' },
+        el('button', { class: 'b', text: '📦 Publish version', onclick: function(){
+          wapi('POST', '/workflows/' + wf.id + '/publish').then(function(r){ toast('✅ Publish v' + r.version); }).catch(err);
+        }}),
+        el('span', { class: 'muted', text: 'Run với input:' })),
+      inBox,
       el('button', { class: 'b primary', text: '▶ Run', onclick: function(){
         try {
-          wapi('POST', '/workflows/' + wf.id + '/run', { input: readJson(inBox) }).then(function(r){
-            out.innerHTML = ''; out.appendChild(jsonBox(r, 14));
-          }).catch(function(e){ out.innerHTML = ''; out.appendChild(el('div', { class: 'card', text: '❌ ' + e.message })); });
+          wapi('POST', '/workflows/' + wf.id + '/run', { input: readJson(inBox) })
+            .then(renderOutcome)
+            .catch(function(e){ out.innerHTML = ''; out.appendChild(el('div', { class: 'card', text: '❌ ' + e.message })); });
         } catch (e) { err(e); }
       }}), out));
+  });
+
+var rApps = jsonSection('Apps', '/apps',
+  function(name){ return { name: name }; },
+  ['name','description','icon_url','agent_ids','workflow_ids','dataset_ids','database_ids','plugin_ids'],
+  function(m, app) {
+    m.appendChild(el('div', { class: 'row' },
+      el('button', { class: 'b primary', text: '📦 Publish app version', onclick: function(){
+        wapi('POST', '/apps/' + app.id + '/publish').then(function(r){
+          toast('✅ v' + r.version + ' — đóng gói ' + JSON.stringify(r.packed));
+        }).catch(err);
+      }})));
   });
 
 var rPrompts = jsonSection('Prompts', '/prompts',
@@ -348,23 +437,39 @@ function rPlugins() {
     if (nameIn.value.trim() && urlIn.value.trim())
       wapi('POST', '/plugins', { name: nameIn.value.trim(), base_url: urlIn.value.trim() }).then(rPlugins).catch(err);
   }})));
+  var specBox = el('textarea', { rows: 4, placeholder: 'Dán OpenAPI 3.x / Swagger 2.x (JSON hoặc YAML), lệnh curl, hoặc Postman collection...' });
+  m.appendChild(el('div', { class: 'card' }, specBox,
+    el('button', { class: 'b primary', text: 'Import spec/curl/postman', onclick: function(){
+      if (!specBox.value.trim()) return;
+      wapi('POST', '/plugins/import', { data: specBox.value }).then(function(r){
+        toast('✅ Import ' + r.tools_imported + ' tools' + (r.warnings.length ? ' — ' + r.warnings.join('; ') : ''));
+        rPlugins();
+      }).catch(err);
+    }})));
   var box = el('div'); m.appendChild(box);
   wapi('GET', '/plugins').then(function(list){
     list.forEach(function(p){
       var card = el('div', { class: 'card' });
       card.appendChild(el('div', { class: 'row' }, el('b', { text: p.name }), el('span', { class: 'muted', text: p.base_url }),
         el('a', { class: 'link', text: 'sửa auth/config', onclick: function(){ editPlugin(p.id); } }),
+        el('a', { class: 'link', text: 'publish', onclick: function(){
+          wapi('POST', '/plugins/' + p.id + '/publish', {}).then(function(r){ toast('✅ Publish v' + r.version); })
+            .catch(function(e){
+              if (confirm(e.message + '\\nPublish force?')) wapi('POST', '/plugins/' + p.id + '/publish', { force: true }).then(function(r){ toast('✅ Publish v' + r.version); }).catch(err);
+            });
+        }}),
         el('a', { class: 'link', text: 'xóa', onclick: function(){ if (confirm('Xóa plugin?')) wapi('DELETE', '/plugins/' + p.id).then(rPlugins).catch(err); } })));
       var toolsBox = el('div'); card.appendChild(toolsBox);
       wapi('GET', '/plugins/' + p.id + '/tools').then(function(tools){
         var t = el('table');
-        t.appendChild(el('tr', {}, el('th', { text: 'Tool' }), el('th', { text: 'Method' }), el('th', { text: 'Path' }), el('th')));
+        t.appendChild(el('tr', {}, el('th', { text: 'Tool' }), el('th', { text: 'Method' }), el('th', { text: 'Path' }), el('th', { text: 'Debug' }), el('th')));
         tools.forEach(function(tool){
           t.appendChild(el('tr', {}, el('td', { text: tool.name }), el('td', { text: tool.method }), el('td', { text: tool.path }),
+            el('td', {}, el('span', { class: 'pill', text: tool.debug_status === 'passed' ? '✓ passed' : 'waiting' })),
             el('td', {}, el('a', { class: 'link', text: 'invoke thử', onclick: function(){
               var args = prompt('args JSON:', '{}'); if (args === null) return;
               wapi('POST', '/plugins/' + p.id + '/tools/' + tool.id + '/invoke', { args: JSON.parse(args) })
-                .then(function(r){ alert('HTTP ' + r.status + '\\n' + r.body.slice(0, 1500)); }).catch(err);
+                .then(function(r){ alert('HTTP ' + r.status + '\\n' + r.body.slice(0, 1500)); rPlugins(); }).catch(err);
             }}))));
         });
         toolsBox.appendChild(t);
