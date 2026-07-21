@@ -12,7 +12,7 @@ import {
   type DbFilter,
   type RwMode,
 } from '../lib/database'
-import { evalExpression } from '../lib/expr'
+import { evalExpression, evalScript } from '../lib/expr'
 import { indexDocument } from '../indexer'
 
 // ============================================================================
@@ -309,14 +309,24 @@ async function execGraph(
   const edgeState = new Map<WfEdge, 'unresolved' | 'active' | 'inactive'>(
     edges.map((e) => [e, 'unresolved'])
   )
-  const results: Record<string, unknown> = { input }
+  const now = new Date()
+  const results: Record<string, unknown> = {
+    input,
+    // system variables, addressable as {{sys.*}} in any template
+    sys: {
+      time: now.toISOString(),
+      date: now.toISOString().slice(0, 10),
+      workspace_id: ctx.workspaceId,
+      user_key: ctx.userKey,
+    },
+  }
   let output: unknown = null
 
   // Resume seeding: mark previously-completed nodes done and re-resolve
   // their outbound edges so execution continues exactly where it stopped.
   if (preset) {
     for (const [nodeId, result] of Object.entries(preset)) {
-      if (nodeId === 'input') continue
+      if (nodeId === 'input' || nodeId === 'sys') continue
       const node = nodesById.get(nodeId)
       if (!node) continue
       results[nodeId] = result
@@ -755,15 +765,16 @@ async function execNode(
       return values
     }
 
-    // Safe expression evaluation (Workers forbid eval — AST-interpreted subset).
-    // data.args maps variable names to templates/paths; `input` and `nodes`
-    // (full scope) are always available.
+    // Safe code evaluation (Workers forbid eval — AST-interpreted subset).
+    // data.expression = single expression; data.script = multi-statement with
+    // `name = expr` bindings. `input` and `nodes` (full scope) are available.
     case 'code': {
       const vars = {
         ...((renderDeep(data.args ?? {}, scope) ?? {}) as Record<string, unknown>),
         input,
         nodes: scope,
       }
+      if (data.script) return { value: evalScript(String(data.script), vars) }
       return { value: evalExpression(String(data.expression ?? ''), vars) }
     }
 

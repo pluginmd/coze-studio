@@ -258,8 +258,17 @@ export async function runChatTurn(
     .limit(100)
   const userVars: Record<string, unknown> = {}
   for (const v of varRows ?? []) userVars[v.name] = v.value
+  const now = new Date()
   const systemPrompt = renderTemplate(execAgent.prompt ?? '', {
     var: { ...(execAgent.variables ?? {}), ...userVars },
+    // system variables: {{sys.time}}, {{sys.date}}, {{sys.user_key}}, ...
+    sys: {
+      time: now.toISOString(),
+      date: now.toISOString().slice(0, 10),
+      user_key: userKey,
+      conversation_id: conversationId,
+      agent_name: execAgent.name,
+    },
   })
 
   const messages: ChatMessage[] = [

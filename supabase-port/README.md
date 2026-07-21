@@ -281,10 +281,10 @@ parse/OCR tại edge không cần sidecar.
 
 - Visual editor kéo-thả cho workflow/agent (console dùng JSON editor; graph
   format tương thích nếu sau này muốn gắn React Flow)
-- `code` node là expression subset chứ không phải JS tùy ý (muốn full JS
-  cần QuickJS WASM)
-- Marketplace cộng đồng đầy đủ (đã có 3 starter templates built-in),
-  18 product plugins Trung Quốc của gốc, datacopy; connector kênh
+- `code` node hỗ trợ expression + script đa dòng (`x = ...; y = ...`) nhưng
+  vẫn là subset an toàn, không phải JS tùy ý (muốn full JS cần QuickJS WASM)
+- Marketplace cộng đồng đầy đủ (đã có 6 templates built-in gồm 3 **product
+  plugin keyless**: Open-Meteo, Wikipedia, Hacker News); connector kênh
   Slack/Telegram (đã có web share + Coze API compat)
 - ppstructure accurate parsing (trích bảng/ảnh từ PDF)
 - Rate limit share là per-isolate best-effort (thêm Cloudflare WAF cho

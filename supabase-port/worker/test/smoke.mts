@@ -347,6 +347,29 @@ assert.strictEqual(mapped[0].path, 'search-files', 'mcp name preserved in path')
 assert.strictEqual(mapped[0].parameters.length, 2)
 assert(mapped[0].parameters.find((p) => p.name === 'query')!.required, 'required propagated')
 
+// --- script-mode code evaluation --------------------------------------------
+const { evalScript } = await import('../src/lib/expr')
+assert.strictEqual(
+  evalScript('subtotal = sum(pluck(items, "price"))\ntax = subtotal * 0.1\nround(subtotal + tax, 2)', {
+    items: [{ price: 100 }, { price: 55 }],
+  }),
+  170.5,
+  'multi-statement script with bindings'
+)
+assert.strictEqual(evalScript('x = 5; y = x * 2; y >= 10 ? "ok" : "no"', {}), 'ok', 'semicolon separator + comparison not mistaken for assignment')
+assert.throws(() => evalScript('fetch("http://x")', {}), /unknown function/, 'script stays sandboxed')
+
+// --- sys variables in workflow scope -----------------------------------------
+const sysGraph: WfGraph = {
+  nodes: [
+    { id: 'start', type: 'start', data: {} },
+    { id: 'end', type: 'end', data: { template: 'ws={{sys.workspace_id}} d={{sys.date}}' } },
+  ],
+  edges: [{ source: 'start', target: 'end' }],
+}
+const rSys = await runWorkflow(fakeEnv, fakeSupabase, 'ws-123', sysGraph, {}, { userKey: 'u1' })
+assert((rSys.output as any).text.startsWith('ws=ws-123 d=20'), 'sys scope rendered: ' + JSON.stringify(rSys.output))
+
 // --- rate limiter ------------------------------------------------------------
 const { rateLimit } = await import('../src/lib/ratelimit')
 for (let i = 0; i < 5; i++) assert(rateLimit('t1', 5, 60_000), 'within limit ' + i)

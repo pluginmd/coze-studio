@@ -269,6 +269,15 @@ Parity backend sau đợt 2: **~70%**.
 | Duplicate agents/workflows + agent export/import JSON (datacopy-lite) | ✅ batch 10 |
 | **Visual workflow editor** trong console (SVG kéo-thả, palette 37 nodes, edge có nhãn, node config panel, auto-layout) | ✅ batch 11 |
 
+### Đợt vét 4 (batch 12)
+
+| Hạng mục | Trạng thái |
+|---|---|
+| `code` node script đa dòng (bindings `x = expr`, vẫn sandbox AST) | ✅ |
+| System variables `{{sys.time/date/user_key/conversation_id/agent_name}}` trong chat + workflow | ✅ |
+| 3 product plugins keyless cài 1 click (Open-Meteo, Wikipedia, Hacker News) | ✅ |
+| **Verify bundle Worker**: `wrangler deploy --dry-run` pass — 854KB gzip (limit 3MB free), unpdf/WASM OK; thêm vào CI | ✅ |
+
 Còn lại chưa port (chấp nhận, giá trị thấp hoặc phụ thuộc ngoài):
 marketplace cộng đồng đầy đủ, 18 product plugins Trung Quốc, ppstructure
 accurate parsing (cần model layout ngoài), QuickJS code node (expression

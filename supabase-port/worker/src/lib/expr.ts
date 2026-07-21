@@ -51,6 +51,30 @@ const FUNCTIONS: Record<string, Fn> = {
 const FORBIDDEN_PROPS = new Set(['__proto__', 'constructor', 'prototype'])
 const MAX_EXPR_LENGTH = 5000
 
+// Multi-statement script mode: lines/;-separated statements, `name = expr`
+// binds a variable for later lines, the last statement is the result.
+// (Still the safe AST interpreter — not arbitrary JS; string literals must
+// not contain ';' or newlines.)
+export function evalScript(src: string, vars: Record<string, unknown>): unknown {
+  const scope: Record<string, unknown> = { ...vars }
+  const statements = src
+    .split(/[;\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (statements.length > 100) throw new Error('script too long (max 100 statements)')
+  let last: unknown = null
+  for (const stmt of statements) {
+    const assign = stmt.match(/^(?:let\s+|const\s+|var\s+)?([A-Za-z_]\w*)\s*=(?![=>])\s*(.+)$/)
+    if (assign) {
+      scope[assign[1]] = evalExpression(assign[2], scope)
+      last = scope[assign[1]]
+    } else {
+      last = evalExpression(stmt, scope)
+    }
+  }
+  return last
+}
+
 export function evalExpression(src: string, vars: Record<string, unknown>): unknown {
   if (src.length > MAX_EXPR_LENGTH) throw new Error('expression too long')
   const ast = jsep(src) as any
