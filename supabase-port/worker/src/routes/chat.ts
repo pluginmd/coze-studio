@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { AppEnv } from '../env'
-import { runChatTurn, ChatError } from '../lib/chatservice'
+import { runChatTurn, ChatError, type ChatAttachment } from '../lib/chatservice'
 
 interface ChatBody {
   agent_id?: string
@@ -9,6 +9,7 @@ interface ChatBody {
   message?: string
   stream?: boolean
   user_key?: string // end-user identity for API-key callers (memory/oauth scoping)
+  attachments?: ChatAttachment[] // multimodal input (images)
 }
 
 export const chat = new Hono<AppEnv>()
@@ -39,6 +40,7 @@ chat.post('/', async (c) => {
     userId: isUser ? c.get('userId') : null,
     userKey: isUser ? c.get('userId') : (body.user_key ?? 'api'),
     message: body.message,
+    attachments: body.attachments,
   }
 
   if (body.stream === false) {
@@ -50,6 +52,7 @@ chat.post('/', async (c) => {
         content: result.content,
         tool_calls: result.toolLog,
         usage: result.usage,
+        suggestions: result.suggestions,
       })
     } catch (e) {
       if (e instanceof ChatError) return c.json({ error: e.message }, e.status as 400)
@@ -58,19 +61,43 @@ chat.post('/', async (c) => {
   }
 
   return streamSSE(c, async (stream) => {
+    // Persist partial output as a broken message if the client aborts
+    // mid-stream (the original "break message" behavior).
+    let partial = ''
+    let conversationId: string | undefined = body.conversation_id
+    let finished = false
+    stream.onAbort(() => {
+      if (finished || !partial || !conversationId) return
+      c.executionCtx.waitUntil(
+        Promise.resolve(
+          supabase.from('messages').insert({
+            conversation_id: conversationId,
+            workspace_id: wid,
+            role: 'assistant',
+            content: partial,
+            meta: { broken: true },
+          })
+        ).then(() => undefined)
+      )
+    })
     try {
       const result = await runChatTurn(c.env, supabase, params, async (ev) => {
+        if (ev.type === 'start') conversationId = String(ev.conversation_id)
+        if (ev.type === 'delta') partial += String(ev.content ?? '')
         await stream.writeSSE({ event: String(ev.type), data: JSON.stringify(ev) })
       })
+      finished = true
       await stream.writeSSE({
         event: 'done',
         data: JSON.stringify({
           conversation_id: result.conversationId,
           message_id: result.messageId,
           usage: result.usage,
+          suggestions: result.suggestions,
         }),
       })
     } catch (e) {
+      finished = true
       await stream.writeSSE({
         event: 'error',
         data: JSON.stringify({ error: String(e instanceof Error ? e.message : e).slice(0, 500) }),

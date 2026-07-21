@@ -1,5 +1,13 @@
 import type { Env } from '../env'
-import { chatComplete, chatStream, type ChatResult, type Usage, type ChatMessage, type ToolDef } from './openai'
+import {
+  chatComplete,
+  chatStream,
+  contentText,
+  type ChatResult,
+  type Usage,
+  type ChatMessage,
+  type ToolDef,
+} from './openai'
 
 // A tool an agent can call: OpenAI function definition + an executor.
 // Built from HTTP plugin tools, agent databases, and workflows alike.
@@ -12,6 +20,10 @@ export interface AgentLoopOptions {
   model?: string
   temperature?: number
   maxTokens?: number
+  topP?: number
+  frequencyPenalty?: number
+  presencePenalty?: number
+  responseFormat?: 'text' | 'json'
   messages: ChatMessage[]
   tools: AgentTool[]
   maxRounds?: number
@@ -49,6 +61,10 @@ export async function runAgentLoop(
       model: opts.model,
       temperature: opts.temperature,
       max_tokens: opts.maxTokens,
+      top_p: opts.topP,
+      frequency_penalty: opts.frequencyPenalty,
+      presence_penalty: opts.presencePenalty,
+      response_format: opts.responseFormat,
       messages,
       tools: toolDefs,
     }
@@ -73,7 +89,7 @@ export async function runAgentLoop(
 
     const toolCalls = result.message.tool_calls ?? []
     if (result.finishReason !== 'tool_calls' || !toolCalls.length) {
-      return { content: result.message.content ?? '', toolLog, usage }
+      return { content: contentText(result.message.content), toolLog, usage }
     }
 
     messages.push(result.message)

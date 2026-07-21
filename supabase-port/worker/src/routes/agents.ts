@@ -16,6 +16,9 @@ const AGENT_FIELDS = [
   'database_ids',
   'shortcuts',
   'variables',
+  'knowledge',
+  'suggest_reply',
+  'onboarding',
 ]
 
 export const agents = new Hono<AppEnv>()
@@ -122,6 +125,42 @@ agents.post('/:id/publish', async (c) => {
     .update({ status: 'published', published_at: new Date().toISOString() })
     .eq('id', agent.id)
   return c.json({ ok: true, version })
+})
+
+// Opening dialog: static prologue, or LLM-generated when onboarding.mode='llm'.
+agents.get('/:id/onboarding', async (c) => {
+  const { data: agent } = await c
+    .get('supabase')
+    .from('agents')
+    .select('name, prompt, welcome_message, suggested_questions, onboarding')
+    .eq('id', c.req.param('id')!)
+    .eq('workspace_id', c.req.param('wid')!)
+    .maybeSingle()
+  if (!agent) return c.json({ error: 'agent not found' }, 404)
+  const onboarding = (agent.onboarding ?? {}) as { mode?: string; prompt?: string }
+  let prologue = agent.welcome_message ?? ''
+  if (onboarding.mode === 'llm') {
+    try {
+      const { chatComplete } = await import('../lib/openai')
+      const result = await chatComplete(c.env, {
+        temperature: 0.7,
+        messages: [
+          {
+            role: 'system',
+            content:
+              onboarding.prompt?.trim() ||
+              'Write a short, friendly opening message (2-3 sentences) that this assistant would ' +
+                'greet a new user with, based on its persona. Same language as the persona. Output only the message.',
+          },
+          { role: 'user', content: `Assistant name: ${agent.name}\nPersona:\n${(agent.prompt ?? '').slice(0, 1500)}` },
+        ],
+      })
+      prologue = (result.message.content ?? '').toString().trim() || prologue
+    } catch {
+      // fall back to the static welcome message
+    }
+  }
+  return c.json({ prologue, suggested_questions: agent.suggested_questions ?? [] })
 })
 
 // Publish the agent to a public hosted chat page at /share/<token>.

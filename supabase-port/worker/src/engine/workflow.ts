@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
-import { chatComplete, type Usage } from '../lib/openai'
+import { chatComplete, contentText, type Usage } from '../lib/openai'
 import { retrieve } from '../lib/retrieval'
 import { invokeTool, type PluginRow, type ToolRow } from '../lib/plugins'
 import { isOAuthConfig, getAccessToken } from '../lib/oauth'
@@ -286,7 +286,7 @@ async function execNode(
         messages,
       })
       addUsage(ctx, result.usage)
-      return { text: result.message.content ?? '', usage: result.usage }
+      return { text: contentText(result.message.content), usage: result.usage }
     }
 
     case 'intent': {
@@ -307,7 +307,7 @@ async function execNode(
         ],
       })
       addUsage(ctx, result.usage)
-      const raw = result.message.content ?? ''
+      const raw = contentText(result.message.content)
       let intent = 'unknown'
       try {
         const parsed = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? '{}')

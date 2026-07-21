@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
 import { embedTexts } from './jina'
-import { chatComplete } from './openai'
+import { chatComplete, contentText } from './openai'
 
 export type SearchType = 'semantic' | 'fulltext' | 'hybrid'
 
@@ -75,7 +75,7 @@ export async function rewriteQuery(
         { role: 'user', content: `Conversation:\n${transcript}\n\nLatest message: ${query}` },
       ],
     })
-    const rewritten = (result.message.content ?? '').trim()
+    const rewritten = contentText(result.message.content).trim()
     return rewritten && rewritten.length < 500 ? rewritten : query
   } catch {
     return query

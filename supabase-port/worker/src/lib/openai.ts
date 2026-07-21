@@ -6,9 +6,13 @@ export interface ToolCall {
   function: { name: string; arguments: string }
 }
 
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null
+  content: string | ContentPart[] | null
   tool_calls?: ToolCall[]
   tool_call_id?: string
 }
@@ -23,12 +27,27 @@ export interface Usage {
   completion_tokens: number
 }
 
+// Flattens message content (assistant replies are plain strings; user
+// messages may be multimodal part arrays).
+export function contentText(content: ChatMessage['content']): string {
+  if (content == null) return ''
+  if (typeof content === 'string') return content
+  return content
+    .filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n')
+}
+
 export interface ChatOptions {
   model?: string
   messages: ChatMessage[]
   tools?: ToolDef[]
   temperature?: number
   max_tokens?: number
+  top_p?: number
+  frequency_penalty?: number
+  presence_penalty?: number
+  response_format?: 'text' | 'json'
 }
 
 export interface ChatResult {
@@ -48,6 +67,10 @@ function buildBody(env: Env, opts: ChatOptions, stream: boolean): Record<string,
     ...(opts.tools?.length ? { tools: opts.tools } : {}),
     ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
     ...(opts.max_tokens != null ? { max_tokens: opts.max_tokens } : {}),
+    ...(opts.top_p != null ? { top_p: opts.top_p } : {}),
+    ...(opts.frequency_penalty != null ? { frequency_penalty: opts.frequency_penalty } : {}),
+    ...(opts.presence_penalty != null ? { presence_penalty: opts.presence_penalty } : {}),
+    ...(opts.response_format === 'json' ? { response_format: { type: 'json_object' } } : {}),
     ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
   }
 }

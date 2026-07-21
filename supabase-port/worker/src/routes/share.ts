@@ -35,7 +35,7 @@ share.post('/:token/chat', async (c) => {
   const { supabase, agent } = await loadSharedAgent(c.env, c.req.param('token')!)
   if (!agent) return c.json({ error: 'invalid share link' }, 404)
   const body = await c.req
-    .json<{ message?: string; conversation_id?: string; session?: string }>()
+    .json<{ message?: string; conversation_id?: string; session?: string; attachments?: any[] }>()
     .catch(() => ({}) as any)
   if (!body.message?.trim()) return c.json({ error: 'message is required' }, 400)
   const session = (body.session ?? 'anon').slice(0, 64)
@@ -47,6 +47,7 @@ share.post('/:token/chat', async (c) => {
     userId: null,
     userKey: `share:${session}`,
     message: body.message,
+    attachments: body.attachments,
   }
 
   return streamSSE(c, async (stream) => {
