@@ -62,7 +62,7 @@ export const consoleStyles = `
   #main { flex: 1; overflow-y: auto; padding: 22px 26px 40px; }
   .pagehead { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; flex-wrap: wrap; }
   .pagehead h1 { font-size: 19px; margin: 0; font-weight: 700; }
-  .pagehead .spacer { flex: 1; }
+  .spacer { flex: 1; }
   .sub { color: var(--muted); font-size: 12.5px; }
 
   /* ---- primitives ---- */
@@ -95,7 +95,7 @@ export const consoleStyles = `
   textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.5; }
   label.f { display: block; margin: 12px 0 0; }
   label.f > span { display: block; font-size: 12.5px; font-weight: 600; margin-bottom: 5px; color: var(--muted); }
-  label.f input, label.f select { width: 100%; }
+  label.f > input, label.f > select { width: 100%; }
   .hint { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 
   .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px; }
