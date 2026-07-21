@@ -4,7 +4,14 @@ import { chatComplete, contentText, type Usage } from '../lib/openai'
 import { retrieve } from '../lib/retrieval'
 import { invokeTool, type PluginRow, type ToolRow } from '../lib/plugins'
 import { isOAuthConfig, getAccessToken } from '../lib/oauth'
-import { queryRows, validateRow, type DbColumn, type DbFilter } from '../lib/database'
+import {
+  queryRows,
+  validateRow,
+  assertWritable,
+  type DbColumn,
+  type DbFilter,
+  type RwMode,
+} from '../lib/database'
 import { evalExpression } from '../lib/expr'
 import { indexDocument } from '../indexer'
 
@@ -583,19 +590,22 @@ async function execNode(
     }
 
     case 'database_query': {
+      const db = await loadDatabase(ctx, String(data.database_id))
       const filters = (renderDeep(data.filters ?? [], scope) ?? []) as DbFilter[]
       const rows = await queryRows(
         ctx.supabase,
         ctx.workspaceId,
-        String(data.database_id),
+        db.id,
         filters,
-        Number(data.limit ?? 100)
+        Number(data.limit ?? 100),
+        { rwMode: db.rwMode, userKey: ctx.userKey }
       )
       return { rows: rows.map((r) => ({ id: r.id, ...r.data })), count: rows.length }
     }
 
     case 'database_insert': {
       const db = await loadDatabase(ctx, String(data.database_id))
+      assertWritable(db.rwMode)
       const row = validateRow(db.columns, renderDeep(data.row ?? {}, scope) as Record<string, unknown>)
       const { data: inserted, error } = await ctx.supabase
         .from('agent_database_rows')
@@ -613,11 +623,15 @@ async function execNode(
 
     case 'database_update': {
       const db = await loadDatabase(ctx, String(data.database_id))
+      assertWritable(db.rwMode)
       const filters = (renderDeep(data.filters ?? [], scope) ?? []) as DbFilter[]
       const set = validateRow(db.columns, renderDeep(data.set ?? {}, scope) as Record<string, unknown>, {
         partial: true,
       })
-      const rows = (await queryRows(ctx.supabase, ctx.workspaceId, db.id, filters, 50))
+      const rows = await queryRows(ctx.supabase, ctx.workspaceId, db.id, filters, 50, {
+        rwMode: db.rwMode,
+        userKey: ctx.userKey,
+      })
       for (const row of rows) {
         await ctx.supabase
           .from('agent_database_rows')
@@ -628,8 +642,13 @@ async function execNode(
     }
 
     case 'database_delete': {
+      const db = await loadDatabase(ctx, String(data.database_id))
+      assertWritable(db.rwMode)
       const filters = (renderDeep(data.filters ?? [], scope) ?? []) as DbFilter[]
-      const rows = await queryRows(ctx.supabase, ctx.workspaceId, String(data.database_id), filters, 50)
+      const rows = await queryRows(ctx.supabase, ctx.workspaceId, db.id, filters, 50, {
+        rwMode: db.rwMode,
+        userKey: ctx.userKey,
+      })
       if (rows.length) {
         await ctx.supabase
           .from('agent_database_rows')
@@ -966,13 +985,17 @@ function resolveItems(spec: unknown, scope: Record<string, unknown>): unknown[] 
 async function loadDatabase(
   ctx: EngineCtx,
   databaseId: string
-): Promise<{ id: string; columns: DbColumn[] }> {
+): Promise<{ id: string; columns: DbColumn[]; rwMode: RwMode }> {
   const { data } = await ctx.supabase
     .from('agent_databases')
-    .select('id, columns')
+    .select('id, columns, rw_mode')
     .eq('id', databaseId)
     .eq('workspace_id', ctx.workspaceId)
     .maybeSingle()
   if (!data) throw new Error(`database not found: ${databaseId}`)
-  return { id: data.id, columns: (data.columns ?? []) as DbColumn[] }
+  return {
+    id: data.id,
+    columns: (data.columns ?? []) as DbColumn[],
+    rwMode: (data.rw_mode ?? 'unlimited') as RwMode,
+  }
 }

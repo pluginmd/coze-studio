@@ -4,7 +4,7 @@ import { pick } from '../lib/util'
 import { queryRows, validateRow, type DbColumn, type DbFilter } from '../lib/database'
 import { parseTable } from '../lib/docparse'
 
-const DATABASE_FIELDS = ['name', 'description', 'columns']
+const DATABASE_FIELDS = ['name', 'description', 'columns', 'rw_mode']
 
 export const databases = new Hono<AppEnv>()
 

@@ -92,20 +92,30 @@ export function applyFilters(rows: DbRow[], filters: DbFilter[]): DbRow[] {
   )
 }
 
+export type RwMode = 'unlimited' | 'read_only' | 'per_user'
+
+// per_user mode scopes rows to the acting end-user (original Limited mode).
 export async function queryRows(
   supabase: SupabaseClient,
   workspaceId: string,
   databaseId: string,
   filters: DbFilter[] = [],
-  limit = 100
+  limit = 100,
+  scope?: { rwMode?: RwMode; userKey?: string }
 ): Promise<DbRow[]> {
-  const { data, error } = await supabase
+  let query = supabase
     .from('agent_database_rows')
     .select('id, data, created_by, created_at, updated_at')
     .eq('database_id', databaseId)
     .eq('workspace_id', workspaceId)
     .order('created_at', { ascending: false })
     .limit(FETCH_CAP)
+  if (scope?.rwMode === 'per_user') query = query.eq('created_by', scope.userKey ?? 'api')
+  const { data, error } = await query
   if (error) throw new Error(`database query failed: ${error.message}`)
   return applyFilters((data ?? []) as DbRow[], filters).slice(0, Math.min(limit, FETCH_CAP))
+}
+
+export function assertWritable(rwMode: RwMode | undefined): void {
+  if (rwMode === 'read_only') throw new Error('database is read-only')
 }

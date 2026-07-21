@@ -3,7 +3,7 @@ import type { Env } from '../env'
 import type { AgentTool } from './agentloop'
 import { invokeTool, type PluginRow, type ToolRow } from './plugins'
 import { isOAuthConfig, getAccessToken } from './oauth'
-import { queryRows, validateRow, type DbColumn, type DbFilter } from './database'
+import { queryRows, validateRow, assertWritable, type DbColumn, type DbFilter, type RwMode } from './database'
 import { runWorkflow, type WfGraph } from '../engine/workflow'
 
 interface AgentRow {
@@ -104,11 +104,13 @@ export async function buildAgentTools(
   if (databaseIds.length) {
     const { data: dbs } = await supabase
       .from('agent_databases')
-      .select('id, name, description, columns')
+      .select('id, name, description, columns, rw_mode')
       .in('id', databaseIds)
       .eq('workspace_id', workspaceId)
     for (const db of dbs ?? []) {
       const columns = (db.columns ?? []) as DbColumn[]
+      const rwMode = (db.rw_mode ?? 'unlimited') as RwMode
+      const scope = { rwMode, userKey }
       const columnList = columns
         .map((c) => `${c.name} (${c.type}${c.description ? `: ${c.description}` : ''})`)
         .join(', ')
@@ -146,11 +148,14 @@ export async function buildAgentTools(
             workspaceId,
             db.id,
             (args.filters ?? []) as DbFilter[],
-            Number(args.limit ?? 20)
+            Number(args.limit ?? 20),
+            scope
           )
           return JSON.stringify({ count: rows.length, rows: rows.map((r) => ({ id: r.id, ...r.data })) })
         },
       })
+
+      if (rwMode === 'read_only') continue
 
       const properties: Record<string, unknown> = {}
       const required: string[] = []
@@ -179,6 +184,70 @@ export async function buildAgentTools(
             .single()
           if (error) return JSON.stringify({ error: error.message })
           return JSON.stringify({ ok: true, id: inserted.id })
+        },
+      })
+      tools.push({
+        def: {
+          type: 'function',
+          function: {
+            name: claim(`update_${db.name}`, db.id),
+            description: `Update one row of the "${db.name}" table by its id. Only pass columns to change.`,
+            parameters: {
+              type: 'object',
+              properties: { id: { type: 'string', description: 'row id from a query' }, ...properties },
+              required: ['id'],
+            },
+          },
+        },
+        execute: async (args) => {
+          const { id, ...rest } = args as { id?: string } & Record<string, unknown>
+          if (!id) return JSON.stringify({ error: 'id is required' })
+          let patch: Record<string, unknown>
+          try {
+            patch = validateRow(columns, rest, { partial: true })
+          } catch (e) {
+            return JSON.stringify({ error: String(e instanceof Error ? e.message : e) })
+          }
+          let query = supabase
+            .from('agent_database_rows')
+            .select('id, data, created_by')
+            .eq('id', id)
+            .eq('database_id', db.id)
+            .eq('workspace_id', workspaceId)
+          if (rwMode === 'per_user') query = query.eq('created_by', userKey)
+          const { data: existing } = await query.maybeSingle()
+          if (!existing) return JSON.stringify({ error: 'row not found' })
+          const { error } = await supabase
+            .from('agent_database_rows')
+            .update({ data: { ...existing.data, ...patch } })
+            .eq('id', existing.id)
+          return JSON.stringify(error ? { error: error.message } : { ok: true, id })
+        },
+      })
+      tools.push({
+        def: {
+          type: 'function',
+          function: {
+            name: claim(`delete_${db.name}`, db.id),
+            description: `Delete one row of the "${db.name}" table by its id.`,
+            parameters: {
+              type: 'object',
+              properties: { id: { type: 'string', description: 'row id from a query' } },
+              required: ['id'],
+            },
+          },
+        },
+        execute: async (args) => {
+          if (!args.id) return JSON.stringify({ error: 'id is required' })
+          let query = supabase
+            .from('agent_database_rows')
+            .delete()
+            .eq('id', String(args.id))
+            .eq('database_id', db.id)
+            .eq('workspace_id', workspaceId)
+          if (rwMode === 'per_user') query = query.eq('created_by', userKey)
+          const { error } = await query
+          return JSON.stringify(error ? { error: error.message } : { ok: true })
         },
       })
     }

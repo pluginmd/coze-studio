@@ -19,6 +19,9 @@ import { prompts } from './routes/prompts'
 import { search } from './routes/search'
 import { oauthWs, oauthCallback } from './routes/oauth'
 import { share } from './routes/share'
+import { apps } from './routes/apps'
+import { files } from './routes/files'
+import { compatV3, compatV1 } from './routes/compat'
 
 const app = new Hono<AppEnv>()
 
@@ -31,6 +34,10 @@ app.route('/share', share)
 
 app.use('/v1/*', cors({ origin: (origin) => origin ?? '*', allowHeaders: ['authorization', 'content-type'] }))
 app.use('/v1/*', auth)
+app.use('/v3/*', cors({ origin: (origin) => origin ?? '*', allowHeaders: ['authorization', 'content-type'] }))
+app.use('/v3/*', auth)
+app.route('/v3', compatV3)
+app.route('/v1', compatV1)
 app.route('/v1', me)
 app.route('/v1/workspaces', workspacesRoot)
 
@@ -49,6 +56,8 @@ app.route('/v1/workspaces/:wid/databases', databases)
 app.route('/v1/workspaces/:wid/variables', variables)
 app.route('/v1/workspaces/:wid/prompts', prompts)
 app.route('/v1/workspaces/:wid/search', search)
+app.route('/v1/workspaces/:wid/apps', apps)
+app.route('/v1/workspaces/:wid/files', files)
 
 app.notFound((c) => c.json({ error: 'not found' }, 404))
 app.onError((err, c) => c.json({ error: String(err?.message ?? err).slice(0, 500) }, 500))
