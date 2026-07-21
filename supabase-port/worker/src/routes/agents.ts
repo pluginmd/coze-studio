@@ -128,6 +128,78 @@ agents.post('/:id/publish', async (c) => {
   return c.json({ ok: true, version })
 })
 
+const EXPORT_STRIP = ['id', 'workspace_id', 'created_by', 'created_at', 'updated_at', 'share_token', 'published_at', 'status']
+
+// Duplicate within the workspace (datacopy-lite).
+agents.post('/:id/duplicate', async (c) => {
+  const supabase = c.get('supabase')
+  const wid = c.req.param('wid')!
+  const { data: agent } = await supabase
+    .from('agents')
+    .select()
+    .eq('id', c.req.param('id')!)
+    .eq('workspace_id', wid)
+    .maybeSingle()
+  if (!agent) return c.json({ error: 'agent not found' }, 404)
+  const copy: Record<string, unknown> = { ...agent }
+  for (const key of EXPORT_STRIP) delete copy[key]
+  const { data, error } = await supabase
+    .from('agents')
+    .insert({
+      ...copy,
+      name: `${agent.name} (copy)`.slice(0, 120),
+      workspace_id: wid,
+      created_by: c.get('authKind') === 'user' ? c.get('userId') : null,
+    })
+    .select('id, name')
+    .single()
+  if (error) return c.json({ error: error.message }, 400)
+  return c.json(data, 201)
+})
+
+// Portable JSON export/import. Import strips workspace-bound resource refs
+// (datasets/tools/workflows/databases) unless keep_refs is set.
+agents.get('/:id/export', async (c) => {
+  const { data: agent } = await c
+    .get('supabase')
+    .from('agents')
+    .select()
+    .eq('id', c.req.param('id')!)
+    .eq('workspace_id', c.req.param('wid')!)
+    .maybeSingle()
+  if (!agent) return c.json({ error: 'agent not found' }, 404)
+  const exported: Record<string, unknown> = { ...agent }
+  for (const key of EXPORT_STRIP) delete exported[key]
+  return c.json({ kind: 'coze-port-agent', version: 1, agent: exported })
+})
+
+agents.post('/import', async (c) => {
+  const body = await c.req
+    .json<{ agent?: Record<string, unknown>; keep_refs?: boolean }>()
+    .catch(() => ({}) as any)
+  const src = body.agent
+  if (!src || typeof src.name !== 'string') return c.json({ error: 'agent payload with name is required' }, 400)
+  const copy = pick(src, AGENT_FIELDS)
+  if (!body.keep_refs) {
+    copy.dataset_ids = []
+    copy.plugin_tool_ids = []
+    copy.workflow_ids = []
+    copy.database_ids = []
+  }
+  const { data, error } = await c
+    .get('supabase')
+    .from('agents')
+    .insert({
+      ...copy,
+      workspace_id: c.req.param('wid')!,
+      created_by: c.get('authKind') === 'user' ? c.get('userId') : null,
+    })
+    .select('id, name')
+    .single()
+  if (error) return c.json({ error: error.message }, 400)
+  return c.json(data, 201)
+})
+
 // Opening dialog: static prologue, or LLM-generated when onboarding.mode='llm'.
 agents.get('/:id/onboarding', async (c) => {
   const { data: agent } = await c

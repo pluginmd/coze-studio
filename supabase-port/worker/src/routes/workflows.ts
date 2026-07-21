@@ -76,6 +76,31 @@ workflows.delete('/:id', async (c) => {
   return c.json({ ok: true })
 })
 
+workflows.post('/:id/duplicate', async (c) => {
+  const supabase = c.get('supabase')
+  const wid = c.req.param('wid')!
+  const { data: wf } = await supabase
+    .from('workflows')
+    .select('name, description, graph')
+    .eq('id', c.req.param('id')!)
+    .eq('workspace_id', wid)
+    .maybeSingle()
+  if (!wf) return c.json({ error: 'workflow not found' }, 404)
+  const { data, error } = await supabase
+    .from('workflows')
+    .insert({
+      name: `${wf.name} (copy)`.slice(0, 120),
+      description: wf.description,
+      graph: wf.graph,
+      workspace_id: wid,
+      created_by: c.get('authKind') === 'user' ? c.get('userId') : null,
+    })
+    .select('id, name')
+    .single()
+  if (error) return c.json({ error: error.message }, 400)
+  return c.json(data, 201)
+})
+
 // Publish: snapshot the draft graph as an immutable version.
 workflows.post('/:id/publish', async (c) => {
   const supabase = c.get('supabase')

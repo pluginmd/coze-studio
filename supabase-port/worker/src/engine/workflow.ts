@@ -869,9 +869,14 @@ async function execNode(
         .eq('workspace_id', ctx.workspaceId)
         .maybeSingle()
       if (!conv) throw new Error(`conversation not found: ${conversationId}`)
-      const { error } = await ctx.supabase.from('messages').delete().eq('conversation_id', conv.id)
+      // rotate section (context boundary) — history preserved
+      const sectionId = crypto.randomUUID()
+      const { error } = await ctx.supabase
+        .from('conversations')
+        .update({ section_id: sectionId })
+        .eq('id', conv.id)
       if (error) throw new Error(error.message)
-      return { ok: true }
+      return { ok: true, section_id: sectionId }
     }
 
     case 'message_edit': {

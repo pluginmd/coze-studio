@@ -28,16 +28,20 @@ conversations.get('/:id/messages', async (c) => {
     .eq('workspace_id', wid)
     .maybeSingle()
   if (!conv) return c.json({ error: 'conversation not found' }, 404)
-  const { data } = await supabase
+  let query = supabase
     .from('messages')
-    .select('id, role, content, tool_calls, meta, created_at')
+    .select('id, role, content, tool_calls, meta, section_id, created_at')
     .eq('conversation_id', conv.id)
     .order('created_at', { ascending: true })
     .limit(200)
+  const section = c.req.query('section_id')
+  if (section) query = query.eq('section_id', section)
+  const { data } = await query
   return c.json(data ?? [])
 })
 
-// Clear history but keep the conversation (workflow/agent "clear context").
+// Clear context: rotate to a new section — the LLM stops seeing prior
+// messages but the full log is preserved. `purge: true` deletes instead.
 conversations.post('/:id/clear', async (c) => {
   const supabase = c.get('supabase')
   const { data: conv } = await supabase
@@ -47,9 +51,19 @@ conversations.post('/:id/clear', async (c) => {
     .eq('workspace_id', c.req.param('wid')!)
     .maybeSingle()
   if (!conv) return c.json({ error: 'conversation not found' }, 404)
-  const { error } = await supabase.from('messages').delete().eq('conversation_id', conv.id)
+  const body = await c.req.json<{ purge?: boolean }>().catch(() => ({}) as any)
+  if (body.purge) {
+    const { error } = await supabase.from('messages').delete().eq('conversation_id', conv.id)
+    if (error) return c.json({ error: error.message }, 400)
+    return c.json({ ok: true, purged: true })
+  }
+  const sectionId = crypto.randomUUID()
+  const { error } = await supabase
+    .from('conversations')
+    .update({ section_id: sectionId })
+    .eq('id', conv.id)
   if (error) return c.json({ error: error.message }, 400)
-  return c.json({ ok: true })
+  return c.json({ ok: true, section_id: sectionId })
 })
 
 conversations.delete('/:id', async (c) => {

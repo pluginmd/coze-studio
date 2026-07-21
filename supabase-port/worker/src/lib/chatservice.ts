@@ -77,15 +77,17 @@ export async function runChatTurn(
   if (!userMessage) throw new ChatError(400, 'message is required')
 
   let conversationId = params.conversationId
+  let sectionId: string | null = null
   if (conversationId) {
     const { data: conv } = await supabase
       .from('conversations')
-      .select('id')
+      .select('id, section_id')
       .eq('id', conversationId)
       .eq('workspace_id', wid)
       .eq('agent_id', agent.id)
       .maybeSingle()
     if (!conv) throw new ChatError(404, 'conversation not found')
+    sectionId = conv.section_id ?? null
   } else {
     const { data: conv, error } = await supabase
       .from('conversations')
@@ -95,10 +97,11 @@ export async function runChatTurn(
         user_id: params.userId ?? null,
         title: userMessage.slice(0, 80),
       })
-      .select('id')
+      .select('id, section_id')
       .single()
     if (error) throw new ChatError(500, error.message)
     conversationId = conv.id as string
+    sectionId = conv.section_id ?? null
   }
   if (emit) await emit({ type: 'start', conversation_id: conversationId })
 
@@ -171,21 +174,25 @@ export async function runChatTurn(
     history_rounds?: number
   }
 
-  // History window is configurable per agent (rounds = user+assistant pairs).
+  // History window: configurable rounds, scoped to the current section
+  // (context boundary — "clear context" rotates the section).
   const historyLimit = Math.min(Math.max(1, modelConfig.history_rounds ?? 10), 20) * 2
-  const { data: historyRows } = await supabase
+  let historyQuery = supabase
     .from('messages')
     .select('role, content')
     .eq('conversation_id', conversationId)
     .in('role', ['user', 'assistant'])
     .order('created_at', { ascending: false })
     .limit(historyLimit)
+  if (sectionId) historyQuery = historyQuery.eq('section_id', sectionId)
+  const { data: historyRows } = await historyQuery
   const history = (historyRows ?? []).reverse() as { role: 'user' | 'assistant'; content: string }[]
 
   const attachments = params.attachments ?? []
   await supabase.from('messages').insert({
     conversation_id: conversationId,
     workspace_id: wid,
+    section_id: sectionId,
     role: 'user',
     content: userMessage,
     meta: attachments.length
@@ -286,6 +293,7 @@ export async function runChatTurn(
     .insert({
       conversation_id: conversationId,
       workspace_id: wid,
+      section_id: sectionId,
       role: 'assistant',
       content: result.content,
       meta: {
