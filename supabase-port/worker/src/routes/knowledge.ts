@@ -3,8 +3,16 @@ import type { AppEnv } from '../env'
 import { pick } from '../lib/util'
 import { indexDocument } from '../indexer'
 import { retrieve } from '../lib/retrieval'
+import { embedTexts } from '../lib/jina'
 
-const DATASET_FIELDS = ['name', 'description', 'embedding_model', 'chunk_size', 'chunk_overlap']
+const DATASET_FIELDS = [
+  'name',
+  'description',
+  'embedding_model',
+  'chunk_size',
+  'chunk_overlap',
+  'chunk_strategy',
+]
 
 export const knowledge = new Hono<AppEnv>()
 
@@ -189,10 +197,10 @@ knowledge.delete('/:dsid/documents/:docid', async (c) => {
   return c.json({ ok: true })
 })
 
-// Test hybrid retrieval directly against one dataset.
+// Test retrieval directly against one dataset (search type/min-score aware).
 knowledge.post('/:dsid/search', async (c) => {
   const body = await c.req
-    .json<{ query?: string; top_k?: number }>()
+    .json<{ query?: string; top_k?: number; min_score?: number; search_type?: string }>()
     .catch(() => ({}) as any)
   if (!body.query?.trim()) return c.json({ error: 'query is required' }, 400)
   const chunks = await retrieve(
@@ -201,7 +209,109 @@ knowledge.post('/:dsid/search', async (c) => {
     c.req.param('wid')!,
     [c.req.param('dsid')!],
     body.query,
-    body.top_k ?? 6
+    {
+      topK: body.top_k ?? 6,
+      minScore: body.min_score,
+      searchType: body.search_type as 'semantic' | 'fulltext' | 'hybrid' | undefined,
+    }
   )
   return c.json(chunks)
+})
+
+// ---------------------------------------------------------------------------
+// Chunk (slice) management — list, add, edit (re-embed), enable/disable, delete
+// ---------------------------------------------------------------------------
+knowledge.get('/:dsid/documents/:docid/chunks', async (c) => {
+  const supabase = c.get('supabase')
+  const wid = c.req.param('wid')!
+  const { data: doc } = await supabase
+    .from('documents')
+    .select('id')
+    .eq('id', c.req.param('docid')!)
+    .eq('dataset_id', c.req.param('dsid')!)
+    .eq('workspace_id', wid)
+    .maybeSingle()
+  if (!doc) return c.json({ error: 'document not found' }, 404)
+  const offset = Number(c.req.query('offset') ?? 0)
+  const limit = Math.min(Number(c.req.query('limit') ?? 50), 200)
+  const { data } = await supabase
+    .from('chunks')
+    .select('id, seq, content, enabled')
+    .eq('document_id', doc.id)
+    .order('seq', { ascending: true })
+    .range(offset, offset + limit - 1)
+  return c.json(data ?? [])
+})
+
+knowledge.post('/:dsid/documents/:docid/chunks', async (c) => {
+  const supabase = c.get('supabase')
+  const wid = c.req.param('wid')!
+  const dsid = c.req.param('dsid')!
+  const { data: doc } = await supabase
+    .from('documents')
+    .select('id, chunk_count')
+    .eq('id', c.req.param('docid')!)
+    .eq('dataset_id', dsid)
+    .eq('workspace_id', wid)
+    .maybeSingle()
+  if (!doc) return c.json({ error: 'document not found' }, 404)
+  const body = await c.req.json<{ content?: string; seq?: number }>().catch(() => ({}) as any)
+  if (!body.content?.trim()) return c.json({ error: 'content is required' }, 400)
+  const [embedding] = await embedTexts(c.env, [body.content], 'retrieval.passage')
+  const { data: chunk, error } = await supabase
+    .from('chunks')
+    .insert({
+      document_id: doc.id,
+      dataset_id: dsid,
+      workspace_id: wid,
+      seq: body.seq ?? (doc.chunk_count ?? 0),
+      content: body.content,
+      embedding,
+    })
+    .select('id, seq, content, enabled')
+    .single()
+  if (error) return c.json({ error: error.message }, 400)
+  await supabase
+    .from('documents')
+    .update({ chunk_count: (doc.chunk_count ?? 0) + 1 })
+    .eq('id', doc.id)
+  return c.json(chunk, 201)
+})
+
+knowledge.patch('/:dsid/chunks/:cid', async (c) => {
+  const supabase = c.get('supabase')
+  const body = await c.req
+    .json<{ content?: string; enabled?: boolean }>()
+    .catch(() => ({}) as any)
+  const updates: Record<string, unknown> = {}
+  if (typeof body.enabled === 'boolean') updates.enabled = body.enabled
+  if (body.content?.trim()) {
+    updates.content = body.content
+    const [embedding] = await embedTexts(c.env, [body.content], 'retrieval.passage')
+    updates.embedding = embedding
+  }
+  if (!Object.keys(updates).length) return c.json({ error: 'nothing to update' }, 400)
+  const { data, error } = await supabase
+    .from('chunks')
+    .update(updates)
+    .eq('id', Number(c.req.param('cid')))
+    .eq('dataset_id', c.req.param('dsid')!)
+    .eq('workspace_id', c.req.param('wid')!)
+    .select('id, seq, enabled')
+    .maybeSingle()
+  if (error) return c.json({ error: error.message }, 400)
+  if (!data) return c.json({ error: 'chunk not found' }, 404)
+  return c.json(data)
+})
+
+knowledge.delete('/:dsid/chunks/:cid', async (c) => {
+  const { error } = await c
+    .get('supabase')
+    .from('chunks')
+    .delete()
+    .eq('id', Number(c.req.param('cid')))
+    .eq('dataset_id', c.req.param('dsid')!)
+    .eq('workspace_id', c.req.param('wid')!)
+  if (error) return c.json({ error: error.message }, 400)
+  return c.json({ ok: true })
 })

@@ -325,7 +325,11 @@ async function execNode(
         ctx.workspaceId,
         (data.dataset_ids ?? []) as string[],
         renderTemplate(String(data.query ?? ''), scope),
-        Number(data.top_k ?? 6)
+        {
+          topK: Number(data.top_k ?? 6),
+          minScore: data.min_score != null ? Number(data.min_score) : undefined,
+          searchType: data.search_type,
+        }
       )
       return { chunks, text: chunks.map((c) => c.content).join('\n\n') }
     }

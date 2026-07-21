@@ -28,11 +28,12 @@ export async function indexDocument(env: Env, documentId: string): Promise<void>
     const text = await parseDocument(new Uint8Array(await blob.arrayBuffer()), doc.name, env)
     const { data: dataset } = await supabase
       .from('datasets')
-      .select('chunk_size, chunk_overlap')
+      .select('chunk_size, chunk_overlap, chunk_strategy')
       .eq('id', doc.dataset_id)
       .maybeSingle()
 
     const chunks = chunkText(text, {
+      ...(dataset?.chunk_strategy ?? {}),
       size: dataset?.chunk_size ?? 1000,
       overlap: dataset?.chunk_overlap ?? 150,
     })
