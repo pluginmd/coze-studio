@@ -376,4 +376,42 @@ for (let i = 0; i < 5; i++) assert(rateLimit('t1', 5, 60_000), 'within limit ' +
 assert(!rateLimit('t1', 5, 60_000), 'blocked over limit')
 assert(rateLimit('t2', 5, 60_000), 'independent keys')
 
+// --- console & share page: embedded JS must be syntactically valid ----------
+const { consoleHtml } = await import('../src/console/index')
+const { sharePageHtml } = await import('../src/routes/sharepage')
+for (const [name, html] of [['console', consoleHtml], ['share', sharePageHtml]] as const) {
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1])
+  assert(scripts.length > 0, name + ' has a script block')
+  for (const js of scripts) {
+    try {
+      new Function(js) // compile only — catches syntax errors without running
+    } catch (e: any) {
+      assert.fail(name + ' embedded JS has a syntax error: ' + e.message)
+    }
+  }
+  assert(html.includes('--primary'), name + ' includes the design system')
+}
+assert(consoleHtml.includes('id="side"') && consoleHtml.includes('data-copy'), 'console structure + markdown copy present')
+
+// --- markdown renderer behaves correctly (evaluated with DOM stubs) ---------
+const { clientLib } = await import('../src/console/clientlib')
+const stubs = {
+  localStorage: { getItem: () => '' },
+  document: { addEventListener: () => undefined, getElementById: () => null, createElement: () => ({}), createTextNode: () => ({}) },
+  navigator: {},
+}
+const lib = new Function(
+  'localStorage', 'document', 'navigator',
+  clientLib + '\nreturn { md: md, esc: esc };'
+)(stubs.localStorage, stubs.document, stubs.navigator)
+assert.strictEqual(lib.esc('<a&b>'), '&lt;a&amp;b&gt;', 'html escaping')
+const rendered = lib.md('# Tiêu đề\n\n**đậm** và `code` với [link](https://x.dev)\n\n- một\n- hai\n\n```\nconst x = 1\n```')
+assert(rendered.includes('<h1>Tiêu đề</h1>'), 'md heading: ' + rendered.slice(0, 120))
+assert(rendered.includes('<b>đậm</b>'), 'md bold')
+assert(rendered.includes('<code>code</code>'), 'md inline code')
+assert(rendered.includes('href="https://x.dev"'), 'md link')
+assert(rendered.includes('<ul>') && rendered.includes('<li>một</li>'), 'md list')
+assert(rendered.includes('<pre>') && rendered.includes('const x = 1'), 'md code fence')
+assert(!lib.md('<script>alert(1)</script>').includes('<script>'), 'md escapes raw html')
+
 console.log('ALL SMOKE TESTS PASSED')
