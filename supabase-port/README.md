@@ -232,6 +232,9 @@ Hoặc mở `https://<worker-url>/` — playground chat có sẵn.
 
 ## Phạm vi so với bản gốc
 
+> **Audit chi tiết feature-by-feature với bản gốc (mức parity thực ~35–40%,
+> danh sách sót ưu tiên P0/P1/P2): xem [AUDIT.md](./AUDIT.md).**
+
 **Đã port** (backend ~246 routes gốc → ~80 endpoints tinh gọn): multi-tenant
 workspaces, agents (prompt/model/publish/shortcuts/**share công khai**), chat
 streaming + 3 loại tool, knowledge RAG (PDF/DOCX/XLSX/**ảnh OCR**/text, hybrid
