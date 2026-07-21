@@ -142,11 +142,14 @@ per-IP — cân nhắc Cloudflare WAF rule khi chạy production.)*
 ### Admin console
 
 Worker serve SPA 1 file tại `/`: đăng nhập (paste token hoặc email/password
-qua Supabase Auth), quản lý agents (edit/publish/share/chat thử), knowledge
-(upload + xem trạng thái index + test hybrid search), workflows (JSON editor +
-run + xem kết quả), plugins (+OAuth connect, invoke thử), databases (+import
-xlsx/csv, xem/sửa rows), prompts, API keys, usage, search. Các trường cấu trúc
-sửa qua JSON editor — không phải visual editor kéo-thả như IDE gốc.
+qua Supabase Auth), quản lý agents (edit/publish/share/chat thử có nút dừng +
+suggestion chips), knowledge (upload, trạng thái index, chunk viewer, test
+hybrid search), workflows với **visual editor SVG kéo-thả** (palette 37 node
+types, kéo di chuyển, nối edge có nhãn true/false/branch/error, panel config
+từng node, auto-layout, lưu về graph JSON tương thích engine) + publish +
+run/resume, plugins (import spec/curl/Postman, OAuth connect, debug badge,
+publish), databases (+import xlsx/csv), apps (publish đóng gói), prompts,
+API keys, usage, search.
 
 ## Cấu trúc thư mục
 

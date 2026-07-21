@@ -259,10 +259,22 @@ Sau audit này, 6 batch đã đóng toàn bộ **P0 (8/8)** và phần lớn **P
 | **MCP plugins — runtime thật** (initialize/tools list/call, sync) — vượt gốc (gốc stub) | ✅ batch 9 |
 | Starter templates built-in + install 1 click | ✅ batch 9 |
 
-Parity backend sau đợt 2: **~70%**. Còn lại thuộc P2 thuần: visual IDE
-kéo-thả, marketplace cộng đồng, 18 product plugins, ppstructure, QuickJS
-code node, conversation sections, variables channels/versioned meta,
-datacopy.
+Parity backend sau đợt 2: **~70%**.
+
+### Đợt vét 3 (batch 10–11, cùng ngày)
+
+| Hạng mục | Trạng thái |
+|---|---|
+| Conversation sections đúng nghĩa (clear context = rotate section, log giữ nguyên) | ✅ batch 10 |
+| Duplicate agents/workflows + agent export/import JSON (datacopy-lite) | ✅ batch 10 |
+| **Visual workflow editor** trong console (SVG kéo-thả, palette 37 nodes, edge có nhãn, node config panel, auto-layout) | ✅ batch 11 |
+
+Còn lại chưa port (chấp nhận, giá trị thấp hoặc phụ thuộc ngoài):
+marketplace cộng đồng đầy đủ, 18 product plugins Trung Quốc, ppstructure
+accurate parsing (cần model layout ngoài), QuickJS code node (expression
+subset đã đủ hầu hết case), variables channels/versioned meta, multi-agent
+jump-config nâng cao (đã có LLM router). **Parity backend ước tính cuối:
+~72–75%; các luồng người dùng chính đạt tương đương hoặc vượt bản gốc.**
 
 *Sinh bởi audit tự động 6-agent + đối chiếu thủ công, 2026-07-21. Dẫn chứng
 file gốc nằm trong từng inventory; hỏi lại nếu cần trace mục cụ thể.*

@@ -332,6 +332,193 @@ function viewChunks(dsid, docid, docName) {
   }).catch(err);
 }
 
+// ---------- visual workflow editor ----------
+var NODE_TYPES = ['start','end','llm','intent','knowledge_retrieve','knowledge_index','knowledge_delete','plugin','http','database_query','database_insert','database_update','database_delete','condition','selector','loop','batch','sub_workflow','question','input','variable_assign','output_emitter','conversation_create','conversation_update','conversation_delete','conversation_list','conversation_clear','message_create','message_edit','message_delete','message_list','template','code','text_processor','json_parse','json_stringify','variable_aggregator'];
+
+function svgEl(tag, attrs) {
+  var e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  if (attrs) Object.keys(attrs).forEach(function(k){ e.setAttribute(k, attrs[k]); });
+  return e;
+}
+
+function visualEditor(wf, backFn) {
+  var m = main();
+  var graph = wf.graph || { nodes: [], edges: [] };
+  graph.nodes = graph.nodes || []; graph.edges = graph.edges || [];
+  var selected = null, connectFrom = null, nextNum = 1;
+
+  // auto-layout nodes missing _pos: columns by BFS depth
+  (function layout(){
+    var depth = {}, inbound = {};
+    graph.edges.forEach(function(e){ inbound[e.target] = (inbound[e.target] || 0) + 1; });
+    var queue = graph.nodes.filter(function(n){ return !inbound[n.id]; }).map(function(n){ return [n.id, 0]; });
+    var seen = {};
+    while (queue.length) {
+      var item = queue.shift(); var id = item[0]; var d = item[1];
+      if (seen[id]) continue; seen[id] = true; depth[id] = d;
+      graph.edges.filter(function(e){ return e.source === id; }).forEach(function(e){ queue.push([e.target, d + 1]); });
+    }
+    var colCount = {};
+    graph.nodes.forEach(function(n){
+      n.data = n.data || {};
+      if (!n.data._pos) {
+        var d = depth[n.id] || 0;
+        colCount[d] = (colCount[d] || 0) + 1;
+        n.data._pos = { x: 40 + d * 230, y: 40 + (colCount[d] - 1) * 110 };
+      }
+    });
+  })();
+
+  m.appendChild(el('div', { class: 'row' },
+    el('button', { class: 'b', text: '← Quay lại', onclick: function(){ backFn(); } }),
+    el('b', { text: '🎨 ' + wf.name }),
+    el('button', { class: 'b primary', text: '💾 Lưu graph', onclick: function(){
+      wapi('PATCH', '/workflows/' + wf.id, { graph: graph }).then(function(){ toast('✅ Đã lưu'); }).catch(err);
+    }}),
+    el('button', { class: 'b', text: '+ Thêm node', onclick: addNode }),
+    el('span', { class: 'muted', text: 'Kéo để di chuyển · click chọn · "Nối tới" rồi click node đích · click nhãn edge để xóa' })));
+
+  var wrap = el('div', { style: 'display:flex; gap:12px; height: calc(100dvh - 120px);' });
+  var canvasBox = el('div', { style: 'flex:1; overflow:auto; border:1px solid #8884; border-radius:10px;' });
+  var svg = svgEl('svg', { width: 2400, height: 1400 });
+  var defs = svgEl('defs');
+  var marker = svgEl('marker', { id: 'arr', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' });
+  var arrPath = svgEl('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: '#6366f1' });
+  marker.appendChild(arrPath); defs.appendChild(marker); svg.appendChild(defs);
+  canvasBox.appendChild(svg);
+  var panel = el('div', { style: 'width: 320px; overflow-y:auto;' });
+  wrap.appendChild(canvasBox); wrap.appendChild(panel);
+  m.appendChild(wrap);
+
+  var drag = null;
+  svg.addEventListener('mousemove', function(e){
+    if (!drag) return;
+    var rect = svg.getBoundingClientRect();
+    drag.node.data._pos.x = Math.max(0, e.clientX - rect.left - drag.dx);
+    drag.node.data._pos.y = Math.max(0, e.clientY - rect.top - drag.dy);
+    drag.moved = true;
+    render();
+  });
+  svg.addEventListener('mouseup', function(){ if (drag && !drag.moved) onNodeClick(drag.node); drag = null; });
+  svg.addEventListener('mouseleave', function(){ drag = null; });
+
+  function onNodeClick(node) {
+    if (connectFrom && connectFrom.id !== node.id) {
+      var label = prompt('Nhãn edge (trống = thường; true/false cho condition; tên nhánh cho selector/intent; error cho error-branch):', '');
+      if (label !== null) {
+        graph.edges.push(label ? { source: connectFrom.id, target: node.id, label: label } : { source: connectFrom.id, target: node.id });
+      }
+      connectFrom = null;
+      selected = node;
+    } else {
+      selected = node;
+      connectFrom = null;
+    }
+    render(); renderPanel();
+  }
+
+  function addNode() {
+    var id = prompt('ID node mới:', 'n' + nextNum++);
+    if (!id) return;
+    if (graph.nodes.some(function(n){ return n.id === id; })) { toast('❌ ID đã tồn tại'); return; }
+    var type = prompt('Loại node (' + NODE_TYPES.slice(0, 8).join(', ') + ', ...):', 'llm');
+    if (!type) return;
+    var box = canvasBox;
+    graph.nodes.push({ id: id, type: type, data: { _pos: { x: box.scrollLeft + 60, y: box.scrollTop + 60 } } });
+    selected = graph.nodes[graph.nodes.length - 1];
+    render(); renderPanel();
+  }
+
+  function render() {
+    while (svg.childNodes.length > 1) svg.removeChild(svg.lastChild);
+    var byId = {};
+    graph.nodes.forEach(function(n){ byId[n.id] = n; });
+    graph.edges.forEach(function(edge, idx){
+      var s = byId[edge.source], t = byId[edge.target];
+      if (!s || !t) return;
+      var x1 = s.data._pos.x + 180, y1 = s.data._pos.y + 32;
+      var x2 = t.data._pos.x, y2 = t.data._pos.y + 32;
+      var mx = (x1 + x2) / 2;
+      var path = svgEl('path', {
+        d: 'M ' + x1 + ' ' + y1 + ' C ' + mx + ' ' + y1 + ', ' + mx + ' ' + y2 + ', ' + x2 + ' ' + y2,
+        fill: 'none', stroke: edge.label === 'error' ? '#dc2626' : '#6366f1', 'stroke-width': 2, 'marker-end': 'url(#arr)'
+      });
+      path.style.cursor = 'pointer';
+      path.addEventListener('click', function(){ removeEdge(idx); });
+      svg.appendChild(path);
+      var lbl = svgEl('text', { x: mx, y: (y1 + y2) / 2 - 6, 'text-anchor': 'middle', 'font-size': 11, fill: 'currentColor' });
+      lbl.textContent = edge.label ? edge.label : '';
+      lbl.style.cursor = 'pointer';
+      lbl.addEventListener('click', function(){ removeEdge(idx); });
+      svg.appendChild(lbl);
+    });
+    graph.nodes.forEach(function(node){
+      var g = svgEl('g', {});
+      var isSel = selected && selected.id === node.id;
+      var rect = svgEl('rect', {
+        x: node.data._pos.x, y: node.data._pos.y, width: 180, height: 64, rx: 10,
+        fill: isSel ? '#6366f133' : '#8881', stroke: connectFrom && connectFrom.id === node.id ? '#f59e0b' : (isSel ? '#6366f1' : '#8886'), 'stroke-width': 2
+      });
+      var t1 = svgEl('text', { x: node.data._pos.x + 12, y: node.data._pos.y + 26, 'font-size': 13, 'font-weight': 600, fill: 'currentColor' });
+      t1.textContent = node.id;
+      var t2 = svgEl('text', { x: node.data._pos.x + 12, y: node.data._pos.y + 46, 'font-size': 11, fill: '#6366f1' });
+      t2.textContent = node.type;
+      g.appendChild(rect); g.appendChild(t1); g.appendChild(t2);
+      g.style.cursor = 'grab';
+      g.addEventListener('mousedown', function(e){
+        var r = svg.getBoundingClientRect();
+        drag = { node: node, dx: e.clientX - r.left - node.data._pos.x, dy: e.clientY - r.top - node.data._pos.y, moved: false };
+        e.preventDefault();
+      });
+      svg.appendChild(g);
+    });
+  }
+
+  function removeEdge(idx) {
+    var e = graph.edges[idx];
+    if (confirm('Xóa edge ' + e.source + ' → ' + e.target + (e.label ? ' [' + e.label + ']' : '') + '?')) {
+      graph.edges.splice(idx, 1);
+      render();
+    }
+  }
+
+  function renderPanel() {
+    panel.innerHTML = '';
+    if (!selected) { panel.appendChild(el('div', { class: 'muted', text: 'Chọn một node để cấu hình.' })); return; }
+    var node = selected;
+    panel.appendChild(el('h2', { text: node.id }));
+    var typeSel = el('select', { style: 'width:100%' });
+    NODE_TYPES.forEach(function(t){ typeSel.appendChild(el('option', { value: t, text: t })); });
+    typeSel.value = node.type;
+    var dataCopy = {}; Object.keys(node.data).forEach(function(k){ if (k !== '_pos') dataCopy[k] = node.data[k]; });
+    var dataBox = el('textarea', { rows: 14, text: JSON.stringify(dataCopy, null, 2) });
+    panel.appendChild(el('div', { class: 'card' },
+      el('div', { class: 'muted', text: 'type:' }), typeSel,
+      el('div', { class: 'muted', text: 'data:' }), dataBox,
+      el('div', { class: 'row' },
+        el('button', { class: 'b primary', text: 'Cập nhật', onclick: function(){
+          try {
+            var parsed = JSON.parse(dataBox.value || '{}');
+            parsed._pos = node.data._pos;
+            node.data = parsed;
+            node.type = typeSel.value;
+            toast('✅ Node updated (nhớ Lưu graph)');
+            render();
+          } catch (e) { err(e); }
+        }}),
+        el('button', { class: 'b', text: '→ Nối tới...', onclick: function(){ connectFrom = node; toast('Chọn node đích để nối'); render(); } }),
+        el('button', { class: 'b', text: 'Xóa node', onclick: function(){
+          if (!confirm('Xóa node ' + node.id + ' và các edge liên quan?')) return;
+          graph.nodes = graph.nodes.filter(function(n){ return n.id !== node.id; });
+          graph.edges = graph.edges.filter(function(e){ return e.source !== node.id && e.target !== node.id; });
+          selected = null; render(); renderPanel();
+        }}))));
+    panel.appendChild(el('div', { class: 'muted', text: 'Nhãn edge đặc biệt: true/false (condition), tên nhánh (selector/intent), error (error-branch).' }));
+  }
+
+  render(); renderPanel();
+}
+
 // ---------- generic JSON-resource sections ----------
 function jsonSection(title, base, createBody, editableKeys, extraActions) {
   return function() {
@@ -399,6 +586,9 @@ var rWorkflows = jsonSection('Workflows', '/workflows',
     }
     m.appendChild(el('div', { class: 'card' },
       el('div', { class: 'row' },
+        el('button', { class: 'b primary', text: '🎨 Visual editor', onclick: function(){
+          visualEditor(wf, function(){ rWorkflows(); });
+        }}),
         el('button', { class: 'b', text: '📦 Publish version', onclick: function(){
           wapi('POST', '/workflows/' + wf.id + '/publish').then(function(r){ toast('✅ Publish v' + r.version); }).catch(err);
         }}),
